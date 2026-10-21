@@ -15,7 +15,6 @@ import {
   X,
   Fingerprint,
   Activity,
-  ChevronRight,
   UserPlus,
   ArrowLeft,
   Mail,
@@ -23,6 +22,8 @@ import {
   User,
   AlertCircle,
   Loader2,
+  LogIn,
+  LogOut,
 } from "lucide-react";
 import "./App.css";
 
@@ -77,12 +78,77 @@ const activities = [
   },
 ];
 
+const getInitials = (name) => {
+  if (!name) return "VK";
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 1) return parts[0].substring(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+};
+
 function App() {
   const [activeNav, setActiveNav] = useState("Dashboard");
   const [mobileMenu, setMobileMenu] = useState(false);
   const [search, setSearch] = useState("");
   const [backendStatus, setBackendStatus] = useState("checking"); // "checking" | "connected" | "disconnected"
   const [dbStatus, setDbStatus] = useState("checking"); // "checking" | "connected" | "disconnected"
+
+  // Active voter session (restored from localStorage)
+  const [currentUser, setCurrentUser] = useState(() => {
+    try {
+      const saved = localStorage.getItem("blockvote_auth");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && parsed.token && parsed.voter) {
+          return parsed;
+        }
+      }
+    } catch {
+      // Ignore corrupted localStorage
+    }
+    return null;
+  });
+
+  // Verify stored session token on mount
+  useEffect(() => {
+    if (!currentUser?.token) return;
+
+    let isMounted = true;
+    fetch("/api/auth/me", {
+      headers: { Authorization: `Bearer ${currentUser.token}` },
+    })
+      .then((res) => {
+        if (!res.ok) {
+          if (isMounted) {
+            localStorage.removeItem("blockvote_auth");
+            setCurrentUser(null);
+          }
+        } else {
+          return res.json().then((data) => {
+            if (isMounted && data.success && data.voter) {
+              setCurrentUser((prev) => (prev ? { ...prev, voter: data.voter } : null));
+            }
+          });
+        }
+      })
+      .catch(() => {
+        // Offline / network failure: retain offline cached session
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [currentUser?.token]);
+
+  const handleLoginSuccess = (authData) => {
+    localStorage.setItem("blockvote_auth", JSON.stringify(authData));
+    setCurrentUser(authData);
+    setActiveNav("Dashboard");
+  };
+
+  const handleSignOut = () => {
+    localStorage.removeItem("blockvote_auth");
+    setCurrentUser(null);
+  };
 
   useEffect(() => {
     let isMounted = true;
@@ -242,12 +308,32 @@ function App() {
           </button>
 
           <div className="profile">
-            <div className="avatar">VK</div>
+            <div className="avatar">{getInitials(currentUser?.voter?.fullName)}</div>
             <div className="profile-info">
-              <strong>Voter Account</strong>
-              <span>Verified member</span>
+              <strong>{currentUser ? currentUser.voter.fullName : "Guest Voter"}</strong>
+              <span>{currentUser ? currentUser.voter.email : "Not signed in"}</span>
             </div>
-            <ChevronRight size={17} className="profile-arrow" />
+            {currentUser ? (
+              <button
+                type="button"
+                className="icon-button profile-signout"
+                onClick={handleSignOut}
+                title="Sign out"
+                aria-label="Sign out"
+              >
+                <LogOut size={16} />
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="icon-button profile-signin"
+                onClick={() => setActiveNav("Voters")}
+                title="Sign in"
+                aria-label="Sign in"
+              >
+                <LogIn size={16} />
+              </button>
+            )}
           </div>
         </div>
       </aside>
@@ -282,13 +368,25 @@ function App() {
               <Bell size={19} />
               <span />
             </button>
-            <div className="avatar top-avatar">VK</div>
+            <div
+              className="avatar top-avatar"
+              title={currentUser ? `${currentUser.voter.fullName} (${currentUser.voter.email})` : "Guest Voter"}
+              onClick={() => !currentUser && setActiveNav("Voters")}
+              style={{ cursor: currentUser ? "default" : "pointer" }}
+            >
+              {getInitials(currentUser?.voter?.fullName)}
+            </div>
           </div>
         </header>
 
         <div className="page-content">
           {activeNav === "Voters" || activeNav === "Register" ? (
-            <VoterRegistrationView onBack={() => setActiveNav("Dashboard")} />
+            <VoterAuthView
+              onBack={() => setActiveNav("Dashboard")}
+              onLoginSuccess={handleLoginSuccess}
+              currentUser={currentUser}
+              onSignOut={handleSignOut}
+            />
           ) : (
             <>
               <section className="welcome-row">
@@ -305,13 +403,25 @@ function App() {
                   </p>
                 </div>
                 <div className="welcome-actions">
-                  <button
-                    className="secondary-action-button"
-                    onClick={() => setActiveNav("Voters")}
-                  >
-                    <UserPlus size={16} />
-                    Register voter
-                  </button>
+                  {currentUser ? (
+                    <button
+                      type="button"
+                      className="secondary-action-button"
+                      onClick={() => setActiveNav("Voters")}
+                    >
+                      <User size={15} />
+                      {currentUser.voter.fullName.split(" ")[0]}'s Account
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="secondary-action-button"
+                      onClick={() => setActiveNav("Voters")}
+                    >
+                      <UserPlus size={16} />
+                      Sign In / Register
+                    </button>
+                  )}
                   <button
                     className="primary-button"
                     onClick={() => setActiveNav("Elections")}
@@ -506,7 +616,8 @@ function App() {
   );
 }
 
-function VoterRegistrationView({ onBack }) {
+function VoterAuthView({ onBack, onLoginSuccess, currentUser, onSignOut }) {
+  const [authMode, setAuthMode] = useState("login"); // "login" | "register"
   const [formData, setFormData] = useState({
     fullName: "",
     email: "",
@@ -523,7 +634,73 @@ function VoterRegistrationView({ onBack }) {
     if (error) setError(null);
   };
 
-  const handleSubmit = async (e) => {
+  const switchMode = (mode) => {
+    setAuthMode(mode);
+    setError(null);
+    setSuccess(null);
+    setFormData({
+      fullName: "",
+      email: "",
+      password: "",
+      confirmPassword: "",
+    });
+  };
+
+  const handleLoginSubmit = async (e) => {
+    e.preventDefault();
+    setError(null);
+    setSuccess(null);
+
+    const { email, password } = formData;
+
+    if (!email.trim() || !password) {
+      setError("Email and password are required.");
+      return;
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email.trim())) {
+      setError("Please enter a valid email address.");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: email.trim().toLowerCase(),
+          password,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        setError(data.message || "Invalid credentials. Please try again.");
+      } else {
+        // Clear sensitive password fields
+        setFormData({
+          fullName: "",
+          email: "",
+          password: "",
+          confirmPassword: "",
+        });
+        onLoginSuccess({
+          token: data.token,
+          voter: data.voter,
+        });
+      }
+    } catch {
+      setError("Unable to connect to the authentication service. Please check your connection.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRegisterSubmit = async (e) => {
     e.preventDefault();
     setError(null);
     setSuccess(null);
@@ -589,22 +766,93 @@ function VoterRegistrationView({ onBack }) {
     }
   };
 
+  if (currentUser) {
+    return (
+      <div className="registration-container">
+        <button type="button" className="back-button" onClick={onBack}>
+          <ArrowLeft size={15} />
+          Back to Dashboard
+        </button>
+
+        <div className="registration-card">
+          <div className="registration-header">
+            <div className="registration-badge">
+              <ShieldCheck size={14} />
+              <span>AUTHENTICATED VOTER SESSION</span>
+            </div>
+            <h2>Active Voter Session</h2>
+            <p>You are authenticated and ready to participate in upcoming elections.</p>
+          </div>
+
+          <div className="active-session-card">
+            <div className="session-info">
+              <div className="session-avatar">{getInitials(currentUser.voter.fullName)}</div>
+              <div className="session-details">
+                <strong>{currentUser.voter.fullName}</strong>
+                <span>{currentUser.voter.email}</span>
+              </div>
+            </div>
+
+            <div className="session-actions">
+              <button
+                type="button"
+                className="secondary-action-button"
+                onClick={onSignOut}
+              >
+                <LogOut size={15} />
+                Sign Out
+              </button>
+              <button
+                type="button"
+                className="primary-button"
+                onClick={onBack}
+              >
+                Continue to Dashboard
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="registration-container">
-      <button className="back-button" onClick={onBack}>
+      <button type="button" className="back-button" onClick={onBack}>
         <ArrowLeft size={15} />
         Back to Dashboard
       </button>
 
       <div className="registration-card">
+        <div className="auth-tabs">
+          <button
+            type="button"
+            className={`auth-tab ${authMode === "login" ? "active" : ""}`}
+            onClick={() => switchMode("login")}
+          >
+            <LogIn size={15} />
+            Sign In
+          </button>
+          <button
+            type="button"
+            className={`auth-tab ${authMode === "register" ? "active" : ""}`}
+            onClick={() => switchMode("register")}
+          >
+            <UserPlus size={15} />
+            Register
+          </button>
+        </div>
+
         <div className="registration-header">
           <div className="registration-badge">
-            <UserPlus size={14} />
-            <span>VOTER ONBOARDING</span>
+            {authMode === "login" ? <LogIn size={14} /> : <UserPlus size={14} />}
+            <span>{authMode === "login" ? "VOTER AUTHENTICATION" : "VOTER ONBOARDING"}</span>
           </div>
-          <h2>Register New Voter</h2>
+          <h2>{authMode === "login" ? "Sign In to BlockVote" : "Register New Voter"}</h2>
           <p>
-            Create an academic voter profile. Passwords are cryptographically hashed using bcrypt.
+            {authMode === "login"
+              ? "Access your academic voting session. Sessions are secured with JSON Web Tokens."
+              : "Create an academic voter profile. Passwords are cryptographically hashed using bcrypt."}
           </p>
         </div>
 
@@ -625,97 +873,173 @@ function VoterRegistrationView({ onBack }) {
           </div>
         )}
 
-        <form onSubmit={handleSubmit} noValidate>
-          <div className="form-group">
-            <label htmlFor="reg-fullname">Full Name</label>
-            <div className="input-wrapper">
-              <User size={16} />
-              <input
-                id="reg-fullname"
-                type="text"
-                name="fullName"
-                className="form-input"
-                placeholder="e.g. Jane Doe"
-                value={formData.fullName}
-                onChange={handleChange}
-                disabled={loading}
-                autoComplete="name"
-              />
+        {authMode === "login" ? (
+          <form onSubmit={handleLoginSubmit} noValidate>
+            <div className="form-group">
+              <label htmlFor="login-email">Email Address</label>
+              <div className="input-wrapper">
+                <Mail size={16} />
+                <input
+                  id="login-email"
+                  type="email"
+                  name="email"
+                  className="form-input"
+                  placeholder="name@college.edu"
+                  value={formData.email}
+                  onChange={handleChange}
+                  disabled={loading}
+                  autoComplete="email"
+                />
+              </div>
             </div>
-          </div>
 
-          <div className="form-group">
-            <label htmlFor="reg-email">Email Address</label>
-            <div className="input-wrapper">
-              <Mail size={16} />
-              <input
-                id="reg-email"
-                type="email"
-                name="email"
-                className="form-input"
-                placeholder="name@college.edu"
-                value={formData.email}
-                onChange={handleChange}
-                disabled={loading}
-                autoComplete="email"
-              />
+            <div className="form-group">
+              <label htmlFor="login-password">Password</label>
+              <div className="input-wrapper">
+                <Lock size={16} />
+                <input
+                  id="login-password"
+                  type="password"
+                  name="password"
+                  className="form-input"
+                  placeholder="Enter your password"
+                  value={formData.password}
+                  onChange={handleChange}
+                  disabled={loading}
+                  autoComplete="current-password"
+                />
+              </div>
             </div>
-          </div>
 
-          <div className="form-group">
-            <label htmlFor="reg-password">Password</label>
-            <div className="input-wrapper">
-              <Lock size={16} />
-              <input
-                id="reg-password"
-                type="password"
-                name="password"
-                className="form-input"
-                placeholder="Minimum 6 characters"
-                value={formData.password}
-                onChange={handleChange}
-                disabled={loading}
-                autoComplete="new-password"
-              />
+            <button type="submit" className="submit-button" disabled={loading}>
+              {loading ? (
+                <>
+                  <Loader2 size={16} className="spinner" />
+                  Authenticating...
+                </>
+              ) : (
+                <>
+                  <LogIn size={16} />
+                  Sign In
+                </>
+              )}
+            </button>
+
+            <div className="auth-toggle-text">
+              Don't have a voter account?{" "}
+              <button
+                type="button"
+                className="auth-toggle-button"
+                onClick={() => switchMode("register")}
+              >
+                Register here
+              </button>
             </div>
-          </div>
-
-          <div className="form-group">
-            <label htmlFor="reg-confirm-password">Confirm Password</label>
-            <div className="input-wrapper">
-              <Lock size={16} />
-              <input
-                id="reg-confirm-password"
-                type="password"
-                name="confirmPassword"
-                className="form-input"
-                placeholder="Re-enter password"
-                value={formData.confirmPassword}
-                onChange={handleChange}
-                disabled={loading}
-                autoComplete="new-password"
-              />
+          </form>
+        ) : (
+          <form onSubmit={handleRegisterSubmit} noValidate>
+            <div className="form-group">
+              <label htmlFor="reg-fullname">Full Name</label>
+              <div className="input-wrapper">
+                <User size={16} />
+                <input
+                  id="reg-fullname"
+                  type="text"
+                  name="fullName"
+                  className="form-input"
+                  placeholder="e.g. Jane Doe"
+                  value={formData.fullName}
+                  onChange={handleChange}
+                  disabled={loading}
+                  autoComplete="name"
+                />
+              </div>
             </div>
-          </div>
 
-          <button
-            type="submit"
-            className="submit-button"
-            disabled={loading}
-          >
-            {loading ? (
-              <>
-                <Loader2 size={16} className="spinner" />
-                Registering voter...
-              </>
-            ) : (
-              <>
-                <UserPlus size={16} />
-                Register Voter
-              </>
-            )}
-          </button>
-        </form>
+            <div className="form-group">
+              <label htmlFor="reg-email">Email Address</label>
+              <div className="input-wrapper">
+                <Mail size={16} />
+                <input
+                  id="reg-email"
+                  type="email"
+                  name="email"
+                  className="form-input"
+                  placeholder="name@college.edu"
+                  value={formData.email}
+                  onChange={handleChange}
+                  disabled={loading}
+                  autoComplete="email"
+                />
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="reg-password">Password</label>
+              <div className="input-wrapper">
+                <Lock size={16} />
+                <input
+                  id="reg-password"
+                  type="password"
+                  name="password"
+                  className="form-input"
+                  placeholder="Minimum 6 characters"
+                  value={formData.password}
+                  onChange={handleChange}
+                  disabled={loading}
+                  autoComplete="new-password"
+                />
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="reg-confirm-password">Confirm Password</label>
+              <div className="input-wrapper">
+                <Lock size={16} />
+                <input
+                  id="reg-confirm-password"
+                  type="password"
+                  name="confirmPassword"
+                  className="form-input"
+                  placeholder="Re-enter password"
+                  value={formData.confirmPassword}
+                  onChange={handleChange}
+                  disabled={loading}
+                  autoComplete="new-password"
+                />
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              className="submit-button"
+              disabled={loading}
+            >
+              {loading ? (
+                <>
+                  <Loader2 size={16} className="spinner" />
+                  Registering voter...
+                </>
+              ) : (
+                <>
+                  <UserPlus size={16} />
+                  Register Voter
+                </>
+              )}
+            </button>
+
+            <div className="auth-toggle-text">
+              Already registered as a voter?{" "}
+              <button
+                type="button"
+                className="auth-toggle-button"
+                onClick={() => switchMode("login")}
+              >
+                Sign in here
+              </button>
+            </div>
+          </form>
+        )}
       </div>
     </div>
   );

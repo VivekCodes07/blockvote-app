@@ -1,5 +1,6 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
 const mongoose = require("mongoose");
 const Voter = require("../models/Voter");
 
@@ -103,6 +104,133 @@ router.post("/register", async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "An internal server error occurred during registration.",
+    });
+  }
+});
+
+// POST /api/auth/login
+router.post("/login", async (req, res) => {
+  try {
+    // Check database connection readiness
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({
+        success: false,
+        message: "Database service is currently unavailable. Please try again shortly.",
+      });
+    }
+
+    const { email, password } = req.body || {};
+
+    // Validate presence
+    if (!email || typeof email !== "string" || !email.trim() || !password || typeof password !== "string") {
+      return res.status(400).json({
+        success: false,
+        message: "Email and password are required.",
+      });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    // Query voter by normalized email
+    const voter = await Voter.findOne({ email: normalizedEmail });
+    if (!voter) {
+      // Generic 401 response prevents user enumeration
+      return res.status(401).json({
+        success: false,
+        message: "Invalid email or password.",
+      });
+    }
+
+    // Verify password against stored bcrypt hash
+    const isPasswordValid = await bcrypt.compare(password, voter.password);
+    if (!isPasswordValid) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid email or password.",
+      });
+    }
+
+    // Validate JWT configuration
+    const jwtSecret = process.env.JWT_SECRET;
+    if (!jwtSecret) {
+      console.error("[Auth] ERROR: JWT_SECRET is not configured in server/.env.");
+      return res.status(500).json({
+        success: false,
+        message: "Authentication service misconfiguration. Please contact administrator.",
+      });
+    }
+
+    // Sign JWT with 24h expiration
+    const payload = {
+      id: voter._id,
+      email: voter.email,
+      fullName: voter.fullName,
+    };
+
+    const token = jwt.sign(payload, jwtSecret, { expiresIn: "24h" });
+
+    return res.status(200).json({
+      success: true,
+      message: "Login successful.",
+      token,
+      voter: {
+        id: voter._id,
+        fullName: voter.fullName,
+        email: voter.email,
+        createdAt: voter.createdAt,
+      },
+    });
+  } catch (error) {
+    console.error("[Auth] Login error:", error.message);
+    return res.status(500).json({
+      success: false,
+      message: "An internal server error occurred during login.",
+    });
+  }
+});
+
+// GET /api/auth/me (Verify active session token)
+router.get("/me", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({
+        success: false,
+        message: "No token provided.",
+      });
+    }
+
+    const token = authHeader.split(" ")[1];
+    const jwtSecret = process.env.JWT_SECRET;
+    if (!jwtSecret) {
+      return res.status(500).json({
+        success: false,
+        message: "Authentication service misconfiguration.",
+      });
+    }
+
+    const decoded = jwt.verify(token, jwtSecret);
+    const voter = await Voter.findById(decoded.id);
+    if (!voter) {
+      return res.status(404).json({
+        success: false,
+        message: "Voter not found.",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      voter: {
+        id: voter._id,
+        fullName: voter.fullName,
+        email: voter.email,
+        createdAt: voter.createdAt,
+      },
+    });
+  } catch {
+    return res.status(401).json({
+      success: false,
+      message: "Invalid or expired session token.",
     });
   }
 });

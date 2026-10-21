@@ -1173,6 +1173,150 @@ input:focus-visible {
   animation: spin 1s linear infinite;
 }
 
+/* Authentication Tabs & Session Management */
+.auth-tabs {
+  display: flex;
+  gap: 6px;
+  background: #141724;
+  padding: 4px;
+  border-radius: 10px;
+  margin-bottom: 22px;
+  border: 1px solid #23263b;
+}
+
+.auth-tab {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: transparent;
+  border: 0;
+  color: #8c90a6;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  transition: all 0.15s ease;
+}
+
+.auth-tab.active {
+  background: #23273c;
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+.auth-tab:hover:not(.active) {
+  color: #cfd2e6;
+}
+
+.auth-toggle-text {
+  text-align: center;
+  margin-top: 18px;
+  font-size: 12px;
+  color: #85899e;
+}
+
+.auth-toggle-button {
+  background: transparent;
+  border: 0;
+  color: #9d8cff;
+  font-weight: 600;
+  padding: 0 4px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.auth-toggle-button:hover {
+  color: #b9afff;
+}
+
+.profile-signout,
+.profile-signin {
+  margin-left: auto;
+  color: #85899e;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: 0;
+}
+
+.profile-signout:hover {
+  color: #fca5a5;
+  background: #ef44441a;
+}
+
+.profile-signin:hover {
+  color: #9d8cff;
+  background: #7966ff1a;
+}
+
+.active-session-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.session-info {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: #141724;
+  padding: 16px;
+  border-radius: 12px;
+  border: 1px solid #23263b;
+}
+
+.session-avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #7966ff, #5541d7);
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 15px;
+  color: #ffffff;
+  flex-shrink: 0;
+}
+
+.session-details {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.session-details strong {
+  color: #ffffff;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-details span {
+  color: #8c90a6;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.session-actions .primary-button,
+.session-actions .secondary-action-button {
+  flex: 1;
+  justify-content: center;
+}
+
 @media (min-width: 1600px) {
   .page-content {
     padding-top: 48px;
