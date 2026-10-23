@@ -29,6 +29,7 @@ const PORT = process.env.PORT || 5000;
 
 // Routes
 const authRoutes = require("./routes/auth");
+const electionRoutes = require("./routes/elections");
 
 // Middleware
 app.use(cors());
@@ -36,6 +37,7 @@ app.use(express.json());
 
 // Mount API routes
 app.use("/api/auth", authRoutes);
+app.use("/api/elections", electionRoutes);
 
 // Helper function to return Mongoose connection state name
 const getDbState = () => {
