@@ -63,11 +63,12 @@ router.post("/register", async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    // Persist new voter
+    // Public registration always assigns the "voter" role
     const newVoter = await Voter.create({
       fullName: cleanFullName,
       email: normalizedEmail,
       password: hashedPassword,
+      role: "voter",
     });
 
     // Return response without any password information
@@ -78,6 +79,7 @@ router.post("/register", async (req, res) => {
         id: newVoter._id,
         fullName: newVoter.fullName,
         email: newVoter.email,
+        role: newVoter.role,
         createdAt: newVoter.createdAt,
       },
     });
@@ -165,6 +167,7 @@ router.post("/login", async (req, res) => {
       id: voter._id,
       email: voter.email,
       fullName: voter.fullName,
+      role: voter.role,
     };
 
     const token = jwt.sign(payload, jwtSecret, { expiresIn: "24h" });
@@ -177,6 +180,7 @@ router.post("/login", async (req, res) => {
         id: voter._id,
         fullName: voter.fullName,
         email: voter.email,
+        role: voter.role,
         createdAt: voter.createdAt,
       },
     });
@@ -224,6 +228,7 @@ router.get("/me", async (req, res) => {
         id: voter._id,
         fullName: voter.fullName,
         email: voter.email,
+        role: voter.role,
         createdAt: voter.createdAt,
       },
     });

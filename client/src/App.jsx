@@ -24,35 +24,12 @@ import {
   Loader2,
   LogIn,
   LogOut,
+  Plus,
+  Trash2,
+  Calendar,
+  ChevronRight,
 } from "lucide-react";
 import "./App.css";
-
-const elections = [
-  {
-    title: "Student Council Election 2026",
-    status: "Active",
-    candidates: 6,
-    votes: 1248,
-    endDate: "Oct 25, 2026",
-    color: "purple",
-  },
-  {
-    title: "Technical Club Representative",
-    status: "Upcoming",
-    candidates: 4,
-    votes: 0,
-    endDate: "Oct 28, 2026",
-    color: "blue",
-  },
-  {
-    title: "Cultural Committee Election",
-    status: "Completed",
-    candidates: 5,
-    votes: 986,
-    endDate: "Oct 15, 2026",
-    color: "green",
-  },
-];
 
 const activities = [
   {
@@ -85,12 +62,40 @@ const getInitials = (name) => {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 };
 
+const formatDate = (dateStr) => {
+  if (!dateStr) return "N/A";
+  const d = new Date(dateStr);
+  return d.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+};
+
+const formatDateTime = (dateStr) => {
+  if (!dateStr) return "N/A";
+  const d = new Date(dateStr);
+  return d.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+};
+
 function App() {
   const [activeNav, setActiveNav] = useState("Dashboard");
   const [mobileMenu, setMobileMenu] = useState(false);
   const [search, setSearch] = useState("");
   const [backendStatus, setBackendStatus] = useState("checking"); // "checking" | "connected" | "disconnected"
   const [dbStatus, setDbStatus] = useState("checking"); // "checking" | "connected" | "disconnected"
+
+  // Elections live state
+  const [electionsList, setElectionsList] = useState([]);
+  const [electionsLoading, setElectionsLoading] = useState(false);
+  const [electionsError, setElectionsError] = useState(null);
+  const [selectedElectionId, setSelectedElectionId] = useState(null);
 
   // Active voter session (restored from localStorage)
   const [currentUser, setCurrentUser] = useState(() => {
@@ -149,6 +154,55 @@ function App() {
     localStorage.removeItem("blockvote_auth");
     setCurrentUser(null);
   };
+
+  const fetchElections = async () => {
+    setElectionsLoading(true);
+    setElectionsError(null);
+    try {
+      const headers = {};
+      if (currentUser?.token) {
+        headers["Authorization"] = `Bearer ${currentUser.token}`;
+      }
+      const response = await fetch("/api/elections", { headers });
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      const data = await response.json();
+      if (data.success && Array.isArray(data.elections)) {
+        setElectionsList(data.elections);
+      }
+    } catch {
+      setElectionsError("Unable to load elections from the server.");
+    } finally {
+      setElectionsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    let isMounted = true;
+    const headers = {};
+    if (currentUser?.token) {
+      headers["Authorization"] = `Bearer ${currentUser.token}`;
+    }
+
+    fetch("/api/elections", { headers })
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+        return res.json();
+      })
+      .then((data) => {
+        if (isMounted && data.success && Array.isArray(data.elections)) {
+          setElectionsList(data.elections);
+        }
+      })
+      .catch(() => {
+        if (isMounted) setElectionsError("Unable to load elections from the server.");
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [currentUser?.token]);
 
   useEffect(() => {
     let isMounted = true;
@@ -215,7 +269,7 @@ function App() {
     { label: "Blockchain Explorer", icon: Blocks },
   ];
 
-  const filteredElections = elections.filter((election) =>
+  const filteredLiveElections = electionsList.filter((election) =>
     election.title.toLowerCase().includes(search.toLowerCase())
   );
 
@@ -261,7 +315,7 @@ function App() {
             >
               <Icon size={19} />
               <span>{label}</span>
-              {label === "Elections" && <span className="nav-count">3</span>}
+              {label === "Elections" && <span className="nav-count">{electionsList.length}</span>}
             </button>
           ))}
         </nav>
@@ -387,6 +441,17 @@ function App() {
               currentUser={currentUser}
               onSignOut={handleSignOut}
             />
+          ) : activeNav === "Elections" ? (
+            <ElectionsView
+              currentUser={currentUser}
+              elections={electionsList}
+              loading={electionsLoading}
+              error={electionsError}
+              onRefresh={fetchElections}
+              onGoToLogin={() => setActiveNav("Voters")}
+              selectedElectionId={selectedElectionId}
+              setSelectedElectionId={setSelectedElectionId}
+            />
           ) : (
             <>
               <section className="welcome-row">
@@ -437,9 +502,14 @@ function App() {
                 <StatCard
                   icon={Vote}
                   label="Total Elections"
-                  value="12"
-                  change="+2 this month"
+                  value={electionsList.length.toString()}
+                  change={
+                    currentUser?.voter?.role === "admin"
+                      ? "Manage campus elections"
+                      : "Verified campus elections"
+                  }
                   tone="purple"
+                  onClick={() => setActiveNav("Elections")}
                 />
                 <StatCard
                   icon={Users}
@@ -482,32 +552,51 @@ function App() {
               </div>
 
               <div className="election-list">
-                {filteredElections.length > 0 ? (
-                  filteredElections.map((election) => (
-                    <div className="election-item" key={election.title}>
-                      <div className={`election-icon ${election.color}`}>
+                {electionsLoading ? (
+                  <div className="empty-state" style={{ display: "flex", gap: "8px", justifyContent: "center" }}>
+                    <Loader2 size={16} className="spinner" />
+                    Loading campus elections...
+                  </div>
+                ) : filteredLiveElections.length > 0 ? (
+                  filteredLiveElections.map((election) => (
+                    <div
+                      className="election-item"
+                      key={election.id}
+                      style={{ cursor: "pointer" }}
+                      onClick={() => {
+                        setSelectedElectionId(election.id);
+                        setActiveNav("Elections");
+                      }}
+                    >
+                      <div className={`election-icon ${election.status.toLowerCase()}`}>
                         <Vote size={20} />
                       </div>
                       <div className="election-main">
                         <h3>{election.title}</h3>
                         <div className="election-meta">
                           <span>
-                            <Users size={14} /> {election.candidates} candidates
+                            <Users size={14} /> {election.candidateCount} candidate{election.candidateCount !== 1 ? "s" : ""}
                           </span>
                           <span>
-                            <Clock3 size={14} /> Ends {election.endDate}
+                            <Clock3 size={14} /> Ends {formatDate(election.endDate)}
                           </span>
                         </div>
                         <div className="election-progress">
                           <span
-                            className={`progress-fill ${election.color}`}
+                            className={`progress-fill ${
+                              election.status === "Active"
+                                ? "purple"
+                                : election.status === "Scheduled"
+                                ? "blue"
+                                : "green"
+                            }`}
                             style={{
                               width:
                                 election.status === "Completed"
                                   ? "100%"
                                   : election.status === "Active"
-                                    ? "68%"
-                                    : "0%",
+                                  ? "68%"
+                                  : "0%",
                             }}
                           />
                         </div>
@@ -516,19 +605,30 @@ function App() {
                         <span className={`status-pill ${election.status.toLowerCase()}`}>
                           {election.status}
                         </span>
-                        <strong>{election.votes.toLocaleString()}</strong>
+                        <strong>{election.voteCount.toLocaleString()}</strong>
                         <span className="vote-caption">votes</span>
                       </div>
                     </div>
                   ))
                 ) : (
                   <div className="empty-state">
-                    No elections match “{search}”.
+                    {search ? `No elections match "${search}".` : "No elections found in database."}{" "}
+                    {currentUser?.voter?.role === "admin" ? (
+                      <button
+                        type="button"
+                        className="auth-toggle-button"
+                        onClick={() => setActiveNav("Elections")}
+                      >
+                        Create first election
+                      </button>
+                    ) : (
+                      "Check back when an election is announced."
+                    )}
                   </div>
                 )}
               </div>
               <div className="panel-footer">
-                <span>Showing demonstration data</span>
+                <span>Real-time election monitor</span>
                 <button onClick={() => setSearch("")}>Reset search</button>
               </div>
             </div>
@@ -1041,6 +1141,987 @@ function VoterAuthView({ onBack, onLoginSuccess, currentUser, onSignOut }) {
           </form>
         )}
       </div>
+    </div>
+  );
+}
+
+function ElectionsView({
+  currentUser,
+  elections,
+  loading,
+  error,
+  onRefresh,
+  onGoToLogin,
+  selectedElectionId,
+  setSelectedElectionId,
+}) {
+  const isAdmin = currentUser?.voter?.role === "admin";
+  const [activeFilter, setActiveFilter] = useState("all");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [selectedElectionData, setSelectedElectionData] = useState(null);
+  const [loadingDetails, setLoadingDetails] = useState(false);
+  const [detailsError, setDetailsError] = useState(null);
+
+  // Modal states
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showCandidateModal, setShowCandidateModal] = useState(false);
+  const [modalLoading, setModalLoading] = useState(false);
+  const [modalError, setModalError] = useState(null);
+
+  // Action toast message
+  const [actionNotice, setActionNotice] = useState(null);
+
+  // Create Election form state
+  const [createForm, setCreateForm] = useState({
+    title: "",
+    description: "",
+    startDate: "",
+    endDate: "",
+    isDraft: false,
+  });
+
+  // Candidate form state
+  const [candidateForm, setCandidateForm] = useState({
+    name: "",
+    party: "",
+    biography: "",
+    imageUrl: "",
+  });
+
+  // Fetch election details when an election is selected
+  useEffect(() => {
+    if (!selectedElectionId) {
+      return;
+    }
+
+    let isMounted = true;
+    const headers = {};
+    if (currentUser?.token) {
+      headers["Authorization"] = `Bearer ${currentUser.token}`;
+    }
+
+    fetch(`/api/elections/${selectedElectionId}`, { headers })
+      .then((res) => {
+        if (!res.ok) {
+          if (res.status === 404) {
+            throw new Error("Election not found or draft restricted to administrators.");
+          }
+          throw new Error("Failed to load election details.");
+        }
+        return res.json();
+      })
+      .then((data) => {
+        if (isMounted && data.success) {
+          setSelectedElectionData(data);
+          setDetailsError(null);
+        }
+      })
+      .catch((err) => {
+        if (isMounted) {
+          setDetailsError(err.message || "Failed to load election details.");
+        }
+      })
+      .finally(() => {
+        if (isMounted) setLoadingDetails(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedElectionId, currentUser?.token]);
+
+  const refreshDetails = async () => {
+    if (!selectedElectionId) return;
+    const headers = {};
+    if (currentUser?.token) {
+      headers["Authorization"] = `Bearer ${currentUser.token}`;
+    }
+    try {
+      const res = await fetch(`/api/elections/${selectedElectionId}`, { headers });
+      const data = await res.json();
+      if (data.success) {
+        setSelectedElectionData(data);
+      }
+    } catch {
+      // Ignore
+    }
+  };
+
+  const handleCreateElectionSubmit = async (e) => {
+    e.preventDefault();
+    setModalError(null);
+
+    const { title, description, startDate, endDate, isDraft } = createForm;
+
+    if (!title.trim() || !description.trim() || !startDate || !endDate) {
+      setModalError("Please complete all required fields.");
+      return;
+    }
+
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      setModalError("Please provide valid dates and times.");
+      return;
+    }
+
+    if (end <= start) {
+      setModalError("End date must be later than the start date.");
+      return;
+    }
+
+    setModalLoading(true);
+
+    try {
+      const res = await fetch("/api/elections", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${currentUser.token}`,
+        },
+        body: JSON.stringify({
+          title: title.trim(),
+          description: description.trim(),
+          startDate: start.toISOString(),
+          endDate: end.toISOString(),
+          isDraft: Boolean(isDraft),
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok || !data.success) {
+        setModalError(data.message || "Failed to create election.");
+      } else {
+        setShowCreateModal(false);
+        setCreateForm({
+          title: "",
+          description: "",
+          startDate: "",
+          endDate: "",
+          isDraft: false,
+        });
+        await onRefresh();
+        setSelectedElectionId(data.election.id);
+        setActionNotice(`Election "${data.election.title}" created successfully!`);
+      }
+    } catch {
+      setModalError("Server connection failed. Please try again.");
+    } finally {
+      setModalLoading(false);
+    }
+  };
+
+  const handleAddCandidateSubmit = async (e) => {
+    e.preventDefault();
+    setModalError(null);
+
+    const { name, party, biography, imageUrl } = candidateForm;
+
+    if (!name.trim() || !party.trim()) {
+      setModalError("Candidate name and party/affiliation are required.");
+      return;
+    }
+
+    setModalLoading(true);
+
+    try {
+      const res = await fetch(`/api/elections/${selectedElectionId}/candidates`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${currentUser.token}`,
+        },
+        body: JSON.stringify({
+          name: name.trim(),
+          party: party.trim(),
+          biography: biography.trim(),
+          imageUrl: imageUrl.trim(),
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok || !data.success) {
+        setModalError(data.message || "Failed to add candidate.");
+      } else {
+        setShowCandidateModal(false);
+        setCandidateForm({ name: "", party: "", biography: "", imageUrl: "" });
+        await refreshDetails();
+        await onRefresh();
+        setActionNotice(`Candidate "${data.candidate.name}" added to slate!`);
+      }
+    } catch {
+      setModalError("Server connection failed. Please try again.");
+    } finally {
+      setModalLoading(false);
+    }
+  };
+
+  const handleDeleteElection = async (electionId, electionTitle, voteCount) => {
+    if (voteCount > 0) {
+      alert("Security Constraint: Cannot delete an election after votes have been recorded.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Are you sure you want to delete "${electionTitle}"? This will permanently delete the election and all candidate nominations.`
+    );
+    if (!confirmed) return;
+
+    try {
+      const res = await fetch(`/api/elections/${electionId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${currentUser.token}` },
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        alert(data.message || "Failed to delete election.");
+      } else {
+        if (selectedElectionId === electionId) {
+          setSelectedElectionId(null);
+          setSelectedElectionData(null);
+        }
+        await onRefresh();
+        setActionNotice(`Election "${electionTitle}" deleted successfully.`);
+      }
+    } catch {
+      alert("Network error: Could not complete election deletion.");
+    }
+  };
+
+  const handleRemoveCandidate = async (candidateId, candidateName) => {
+    if (!selectedElectionData?.election) return;
+    const el = selectedElectionData.election;
+
+    if (el.voteCount > 0) {
+      alert("Security Constraint: Cannot remove a candidate after votes have been recorded.");
+      return;
+    }
+
+    const confirmed = window.confirm(`Remove candidate "${candidateName}" from this election slate?`);
+    if (!confirmed) return;
+
+    try {
+      const res = await fetch(`/api/elections/${el.id}/candidates/${candidateId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${currentUser.token}` },
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        alert(data.message || "Failed to remove candidate.");
+      } else {
+        await refreshDetails();
+        await onRefresh();
+        setActionNotice(`Candidate "${candidateName}" removed from slate.`);
+      }
+    } catch {
+      alert("Network error: Could not remove candidate.");
+    }
+  };
+
+  // Filter calculations
+  const filteredElections = elections.filter((e) => {
+    const matchesSearch =
+      e.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (e.description && e.description.toLowerCase().includes(searchTerm.toLowerCase()));
+
+    if (!matchesSearch) return false;
+
+    if (activeFilter === "all") return true;
+    if (activeFilter === "draft") return e.isDraft;
+    return e.status?.toLowerCase() === activeFilter.toLowerCase();
+  });
+
+  const activeCount = elections.filter((e) => e.status === "Active").length;
+  const scheduledCount = elections.filter((e) => e.status === "Scheduled").length;
+  const completedCount = elections.filter((e) => e.status === "Completed").length;
+  const draftCount = elections.filter((e) => e.isDraft).length;
+
+  return (
+    <div className="elections-view-container">
+      {/* Top Header */}
+      <div className="elections-view-header">
+        <div>
+          <h1>Campus Elections</h1>
+          <p className="elections-view-subtitle">
+            Browse verified academic elections, view candidate slates, and track live statuses.
+          </p>
+        </div>
+
+        <div className="elections-actions-row">
+          {isAdmin ? (
+            <>
+              <span className="admin-badge">
+                <ShieldCheck size={14} /> Administrator
+              </span>
+              <button
+                type="button"
+                className="primary-button"
+                onClick={() => {
+                  setModalError(null);
+                  setShowCreateModal(true);
+                }}
+              >
+                <Plus size={16} />
+                Create Election
+              </button>
+            </>
+          ) : !currentUser ? (
+            <button
+              type="button"
+              className="secondary-action-button"
+              onClick={onGoToLogin}
+            >
+              <UserPlus size={16} />
+              Sign In to Vote
+            </button>
+          ) : (
+            <span className="admin-badge" style={{ background: "#3dd68c18", color: "#75dca9", borderColor: "#3dd68c33" }}>
+              <ShieldCheck size={14} /> Registered Voter
+            </span>
+          )}
+        </div>
+      </div>
+
+      {actionNotice && (
+        <div className="form-alert success" role="status" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <CheckCircle2 size={18} />
+            <span>{actionNotice}</span>
+          </div>
+          <button
+            type="button"
+            className="modal-close-btn"
+            onClick={() => setActionNotice(null)}
+            aria-label="Dismiss notice"
+          >
+            <X size={16} />
+          </button>
+        </div>
+      )}
+
+      {/* Selected Election Detail & Candidate View */}
+      {selectedElectionId ? (
+        <div className="election-detail-container">
+          <button
+            type="button"
+            className="back-link"
+            onClick={() => {
+              setSelectedElectionId(null);
+              setSelectedElectionData(null);
+            }}
+          >
+            <ArrowLeft size={15} />
+            Back to all elections
+          </button>
+
+          {loadingDetails ? (
+            <div className="empty-elections-card">
+              <Loader2 size={24} className="spinner" />
+              <p>Loading election details and candidate slate...</p>
+            </div>
+          ) : detailsError ? (
+            <div className="form-alert error">
+              <AlertCircle size={18} />
+              <span>{detailsError}</span>
+            </div>
+          ) : selectedElectionData?.election ? (
+            <>
+              {/* Election Hero Card */}
+              <div className="election-detail-hero">
+                <div className="hero-top-row">
+                  <div className="hero-title-group">
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px" }}>
+                      <span className={`status-pill ${selectedElectionData.election.status.toLowerCase()}`}>
+                        {selectedElectionData.election.status}
+                      </span>
+                      {selectedElectionData.election.isDraft && (
+                        <span className="admin-badge" style={{ background: "#f59e0b22", color: "#fbbf24", borderColor: "#f59e0b44" }}>
+                          Unpublished Draft
+                        </span>
+                      )}
+                    </div>
+                    <h2>{selectedElectionData.election.title}</h2>
+                    <p className="hero-description">{selectedElectionData.election.description}</p>
+                  </div>
+                </div>
+
+                <div className="hero-info-grid">
+                  <div className="hero-info-box">
+                    <span className="hero-info-label">Voting Period Start</span>
+                    <span className="hero-info-value">{formatDateTime(selectedElectionData.election.startDate)}</span>
+                  </div>
+                  <div className="hero-info-box">
+                    <span className="hero-info-label">Voting Period End</span>
+                    <span className="hero-info-value">{formatDateTime(selectedElectionData.election.endDate)}</span>
+                  </div>
+                  <div className="hero-info-box">
+                    <span className="hero-info-label">Candidates Nominated</span>
+                    <span className="hero-info-value">{selectedElectionData.candidates?.length || 0}</span>
+                  </div>
+                  <div className="hero-info-box">
+                    <span className="hero-info-label">Recorded Ballots</span>
+                    <span className="hero-info-value">{selectedElectionData.election.voteCount.toLocaleString()} votes</span>
+                  </div>
+                </div>
+
+                {isAdmin && (
+                  <div className="hero-admin-actions">
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={() => {
+                        setModalError(null);
+                        setShowCandidateModal(true);
+                      }}
+                    >
+                      <Plus size={15} />
+                      Add Candidate
+                    </button>
+                    <button
+                      type="button"
+                      className="danger-button"
+                      disabled={selectedElectionData.election.voteCount > 0}
+                      title={
+                        selectedElectionData.election.voteCount > 0
+                          ? "Cannot delete election after votes have been recorded"
+                          : "Delete this election"
+                      }
+                      onClick={() =>
+                        handleDeleteElection(
+                          selectedElectionData.election.id,
+                          selectedElectionData.election.title,
+                          selectedElectionData.election.voteCount
+                        )
+                      }
+                    >
+                      <Trash2 size={15} />
+                      Delete Election
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Candidate Slate Section */}
+              <div className="candidates-section">
+                <div className="candidates-header">
+                  <h3>
+                    Candidate Slate ({selectedElectionData.candidates?.length || 0})
+                  </h3>
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      className="card-action-btn"
+                      onClick={() => {
+                        setModalError(null);
+                        setShowCandidateModal(true);
+                      }}
+                    >
+                      <Plus size={14} />
+                      Nominate Candidate
+                    </button>
+                  )}
+                </div>
+
+                {selectedElectionData.candidates?.length > 0 ? (
+                  <div className="candidates-grid">
+                    {selectedElectionData.candidates.map((candidate) => (
+                      <div className="candidate-card" key={candidate.id}>
+                        <div className="candidate-top-info">
+                          <div className="candidate-avatar">
+                            {candidate.imageUrl ? (
+                              <img
+                                src={candidate.imageUrl}
+                                alt={candidate.name}
+                                onError={(e) => {
+                                  e.target.style.display = "none";
+                                }}
+                              />
+                            ) : (
+                              getInitials(candidate.name)
+                            )}
+                          </div>
+                          <div className="candidate-details">
+                            <h4 className="candidate-name" title={candidate.name}>
+                              {candidate.name}
+                            </h4>
+                            <span className="candidate-party">{candidate.party}</span>
+                          </div>
+                        </div>
+
+                        {candidate.biography && (
+                          <p className="candidate-bio">{candidate.biography}</p>
+                        )}
+
+                        <div className="candidate-footer">
+                          <span className="candidate-votes">
+                            <strong>{candidate.voteCount}</strong> votes
+                          </span>
+
+                          {isAdmin && (
+                            <button
+                              type="button"
+                              className="danger-button"
+                              style={{ padding: "5px 10px", fontSize: "11px" }}
+                              disabled={
+                                candidate.voteCount > 0 || selectedElectionData.election.voteCount > 0
+                              }
+                              title={
+                                candidate.voteCount > 0 || selectedElectionData.election.voteCount > 0
+                                  ? "Cannot remove candidate after voting begins"
+                                  : "Remove candidate"
+                              }
+                              onClick={() => handleRemoveCandidate(candidate.id, candidate.name)}
+                            >
+                              <Trash2 size={13} />
+                              Remove
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="empty-elections-card">
+                    <Users size={32} />
+                    <h3>No Candidates Nominated Yet</h3>
+                    <p>
+                      {isAdmin
+                        ? "Click 'Add Candidate' above to nominate candidates for this election slate."
+                        : "Candidate nominations have not been posted for this election."}
+                    </p>
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        className="primary-button"
+                        onClick={() => {
+                          setModalError(null);
+                          setShowCandidateModal(true);
+                        }}
+                      >
+                        <Plus size={15} />
+                        Add First Candidate
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            </>
+          ) : null}
+        </div>
+      ) : (
+        /* Elections List View */
+        <>
+          {/* Toolbar: Filters and Search */}
+          <div className="elections-toolbar">
+            <div className="elections-filter-tabs">
+              <button
+                type="button"
+                className={`filter-tab ${activeFilter === "all" ? "active" : ""}`}
+                onClick={() => setActiveFilter("all")}
+              >
+                All <span className="filter-tab-count">{elections.length}</span>
+              </button>
+              <button
+                type="button"
+                className={`filter-tab ${activeFilter === "active" ? "active" : ""}`}
+                onClick={() => setActiveFilter("active")}
+              >
+                Active <span className="filter-tab-count">{activeCount}</span>
+              </button>
+              <button
+                type="button"
+                className={`filter-tab ${activeFilter === "scheduled" ? "active" : ""}`}
+                onClick={() => setActiveFilter("scheduled")}
+              >
+                Scheduled <span className="filter-tab-count">{scheduledCount}</span>
+              </button>
+              <button
+                type="button"
+                className={`filter-tab ${activeFilter === "completed" ? "active" : ""}`}
+                onClick={() => setActiveFilter("completed")}
+              >
+                Completed <span className="filter-tab-count">{completedCount}</span>
+              </button>
+              {isAdmin && (
+                <button
+                  type="button"
+                  className={`filter-tab ${activeFilter === "draft" ? "active" : ""}`}
+                  onClick={() => setActiveFilter("draft")}
+                >
+                  Drafts <span className="filter-tab-count">{draftCount}</span>
+                </button>
+              )}
+            </div>
+
+            <div className="elections-search-box">
+              <Search size={15} />
+              <input
+                type="text"
+                placeholder="Search elections by title..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+              />
+              {searchTerm && (
+                <button
+                  type="button"
+                  style={{ background: "transparent", border: 0, color: "#8c90a6", padding: 0 }}
+                  onClick={() => setSearchTerm("")}
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Grid or Status */}
+          {loading ? (
+            <div className="empty-elections-card">
+              <Loader2 size={24} className="spinner" />
+              <p>Fetching campus elections...</p>
+            </div>
+          ) : error ? (
+            <div className="form-alert error">
+              <AlertCircle size={18} />
+              <span>{error}</span>
+              <button
+                type="button"
+                className="secondary-action-button"
+                style={{ marginLeft: "auto", padding: "4px 10px" }}
+                onClick={onRefresh}
+              >
+                Retry
+              </button>
+            </div>
+          ) : filteredElections.length > 0 ? (
+            <div className="elections-grid">
+              {filteredElections.map((election) => (
+                <div className="election-card" key={election.id}>
+                  <div className="election-card-header">
+                    <div className="election-card-title-row">
+                      <div className={`election-card-icon ${election.status.toLowerCase()}`}>
+                        <Vote size={19} />
+                      </div>
+                      <span className={`status-pill ${election.status.toLowerCase()}`}>
+                        {election.status}
+                      </span>
+                    </div>
+
+                    {election.isDraft && (
+                      <span className="admin-badge" style={{ background: "#f59e0b1a", color: "#fbbf24", borderColor: "#f59e0b33" }}>
+                        Draft
+                      </span>
+                    )}
+                  </div>
+
+                  <h3 className="election-card-title">{election.title}</h3>
+                  <p className="election-card-description">{election.description}</p>
+
+                  <div className="election-card-meta">
+                    <div className="meta-row">
+                      <Calendar size={13} />
+                      <span>Starts: {formatDate(election.startDate)}</span>
+                    </div>
+                    <div className="meta-row">
+                      <Clock3 size={13} />
+                      <span>Ends: {formatDate(election.endDate)}</span>
+                    </div>
+                    <div className="meta-row">
+                      <Users size={13} />
+                      <span>
+                        {election.candidateCount} candidate{election.candidateCount !== 1 ? "s" : ""} nominated
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="election-card-footer">
+                    <div className="vote-stat">
+                      <span className="vote-stat-number">{election.voteCount.toLocaleString()}</span>
+                      <span className="vote-stat-label">Votes Recorded</span>
+                    </div>
+
+                    <div style={{ display: "flex", gap: "6px" }}>
+                      {isAdmin && election.voteCount === 0 && (
+                        <button
+                          type="button"
+                          className="danger-button"
+                          style={{ padding: "8px 10px" }}
+                          title="Delete election"
+                          onClick={() =>
+                            handleDeleteElection(election.id, election.title, election.voteCount)
+                          }
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        className="card-action-btn"
+                        onClick={() => setSelectedElectionId(election.id)}
+                      >
+                        View Slate
+                        <ChevronRight size={14} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-elections-card">
+              <Vote size={32} />
+              <h3>No Elections Found</h3>
+              <p>
+                {searchTerm
+                  ? `No elections match "${searchTerm}". Try adjusting your search query or filter.`
+                  : "There are currently no elections matching this category."}
+              </p>
+              {isAdmin && (
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => {
+                    setModalError(null);
+                    setShowCreateModal(true);
+                  }}
+                >
+                  <Plus size={16} />
+                  Create New Election
+                </button>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Modal: Create Election (Admin Only) */}
+      {showCreateModal && (
+        <div className="modal-overlay" role="dialog" aria-modal="true">
+          <div className="modal-dialog">
+            <div className="modal-header">
+              <h3>Create Campus Election</h3>
+              <button
+                type="button"
+                className="modal-close-btn"
+                onClick={() => !modalLoading && setShowCreateModal(false)}
+                aria-label="Close modal"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateElectionSubmit}>
+              <div className="modal-body">
+                {modalError && (
+                  <div className="form-alert error">
+                    <AlertCircle size={16} />
+                    <span>{modalError}</span>
+                  </div>
+                )}
+
+                <div className="form-group">
+                  <label htmlFor="create-title">Election Title *</label>
+                  <input
+                    id="create-title"
+                    type="text"
+                    className="form-input"
+                    placeholder="e.g. 2026 Student Government President"
+                    value={createForm.title}
+                    onChange={(e) => setCreateForm({ ...createForm, title: e.target.value })}
+                    disabled={modalLoading}
+                    required
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label htmlFor="create-desc">Description *</label>
+                  <textarea
+                    id="create-desc"
+                    className="form-textarea"
+                    placeholder="Provide details about the election, eligible voters, and voting rules..."
+                    value={createForm.description}
+                    onChange={(e) => setCreateForm({ ...createForm, description: e.target.value })}
+                    disabled={modalLoading}
+                    required
+                  />
+                </div>
+
+                <div className="form-row">
+                  <div className="form-group">
+                    <label htmlFor="create-start">Start Date & Time *</label>
+                    <input
+                      id="create-start"
+                      type="datetime-local"
+                      className="form-input"
+                      value={createForm.startDate}
+                      onChange={(e) => setCreateForm({ ...createForm, startDate: e.target.value })}
+                      disabled={modalLoading}
+                      required
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label htmlFor="create-end">End Date & Time *</label>
+                    <input
+                      id="create-end"
+                      type="datetime-local"
+                      className="form-input"
+                      value={createForm.endDate}
+                      onChange={(e) => setCreateForm({ ...createForm, endDate: e.target.value })}
+                      disabled={modalLoading}
+                      required
+                    />
+                  </div>
+                </div>
+
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={createForm.isDraft}
+                    onChange={(e) => setCreateForm({ ...createForm, isDraft: e.target.checked })}
+                    disabled={modalLoading}
+                  />
+                  <span>Save as Draft (hidden from voters until published)</span>
+                </label>
+              </div>
+
+              <div className="modal-footer">
+                <button
+                  type="button"
+                  className="secondary-action-button"
+                  onClick={() => setShowCreateModal(false)}
+                  disabled={modalLoading}
+                >
+                  Cancel
+                </button>
+                <button type="submit" className="primary-button" disabled={modalLoading}>
+                  {modalLoading ? (
+                    <>
+                      <Loader2 size={15} className="spinner" />
+                      Creating...
+                    </>
+                  ) : (
+                    <>
+                      <Plus size={15} />
+                      Create Election
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Add Candidate (Admin Only) */}
+      {showCandidateModal && (
+        <div className="modal-overlay" role="dialog" aria-modal="true">
+          <div className="modal-dialog">
+            <div className="modal-header">
+              <h3>Nominate Candidate</h3>
+              <button
+                type="button"
+                className="modal-close-btn"
+                onClick={() => !modalLoading && setShowCandidateModal(false)}
+                aria-label="Close modal"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={handleAddCandidateSubmit}>
+              <div className="modal-body">
+                {modalError && (
+                  <div className="form-alert error">
+                    <AlertCircle size={16} />
+                    <span>{modalError}</span>
+                  </div>
+                )}
+
+                <div className="form-group">
+                  <label htmlFor="cand-name">Candidate Full Name *</label>
+                  <input
+                    id="cand-name"
+                    type="text"
+                    className="form-input"
+                    placeholder="e.g. Jordan Hayes"
+                    value={candidateForm.name}
+                    onChange={(e) => setCandidateForm({ ...candidateForm, name: e.target.value })}
+                    disabled={modalLoading}
+                    required
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label htmlFor="cand-party">Party or Affiliation *</label>
+                  <input
+                    id="cand-party"
+                    type="text"
+                    className="form-input"
+                    placeholder="e.g. Campus Progress Alliance / Independent"
+                    value={candidateForm.party}
+                    onChange={(e) => setCandidateForm({ ...candidateForm, party: e.target.value })}
+                    disabled={modalLoading}
+                    required
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label htmlFor="cand-bio">Biography / Platform (Optional)</label>
+                  <textarea
+                    id="cand-bio"
+                    className="form-textarea"
+                    placeholder="Brief platform overview, background, or campaign goals..."
+                    value={candidateForm.biography}
+                    onChange={(e) => setCandidateForm({ ...candidateForm, biography: e.target.value })}
+                    disabled={modalLoading}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label htmlFor="cand-image">Profile Image URL (Optional)</label>
+                  <input
+                    id="cand-image"
+                    type="url"
+                    className="form-input"
+                    placeholder="https://example.com/portrait.jpg"
+                    value={candidateForm.imageUrl}
+                    onChange={(e) => setCandidateForm({ ...candidateForm, imageUrl: e.target.value })}
+                    disabled={modalLoading}
+                  />
+                </div>
+              </div>
+
+              <div className="modal-footer">
+                <button
+                  type="button"
+                  className="secondary-action-button"
+                  onClick={() => setShowCandidateModal(false)}
+                  disabled={modalLoading}
+                >
+                  Cancel
+                </button>
+                <button type="submit" className="primary-button" disabled={modalLoading}>
+                  {modalLoading ? (
+                    <>
+                      <Loader2 size={15} className="spinner" />
+                      Adding...
+                    </>
+                  ) : (
+                    <>
+                      <Plus size={15} />
+                      Add Candidate
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
