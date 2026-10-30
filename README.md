@@ -74,6 +74,10 @@
   - Built dedicated `ElectionsView` with category filter tabs (`All`, `Active`, `Scheduled`, `Completed`, `Drafts`), keyword search, and dynamic status pills.
   - Election detail view displaying complete dates, full descriptions, and candidate nomination slate with candidate cards.
   - Administrator controls (Create Election modal, Nominate Candidate modal, pre-vote Delete buttons) conditionally rendered only when `currentUser?.voter?.role === "admin"`.
+  - **Draft Publishing & Editing Workflow**:
+    - `PATCH /api/elections/:id/publish`: Admin-only endpoint allowing administrators to publish draft elections. Validates that the election has at least one nominated candidate and that end dates are strictly in the future. Transitions `isDraft: false`, automatically deriving `Scheduled` (if start date is in the future) or `Active`.
+    - `PUT /api/elections/:id`: Supports updating election parameters (title, description, dates, draft status) with validation against candidate and date requirements.
+    - Frontend admin controls: A prominent "Publish Election" banner and button on the draft election detail view, a direct "Publish" button on draft election cards in the list view, and an "Edit Details" modal for updating parameters.
 
 ### 7. One Vote Per Election (Anonymous Ballots & Participation Separation)
 - **Data Model Separation (Ballot Secrecy)**:

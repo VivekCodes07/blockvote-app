@@ -314,6 +314,25 @@ router.put("/:id", verifyToken, requireAdmin, async (req, res) => {
           message: "isDraft must be a boolean value.",
         });
       }
+
+      // Transitioning from draft to published requires candidate and date validation
+      if (isDraft === false && election.isDraft === true) {
+        const candidateCount = await Candidate.countDocuments({ electionId: id });
+        if (candidateCount === 0) {
+          return res.status(400).json({
+            success: false,
+            message: "Cannot publish an election without nominated candidates. Please add at least one candidate before publishing.",
+          });
+        }
+
+        if (newEnd <= new Date()) {
+          return res.status(400).json({
+            success: false,
+            message: "Cannot publish an election whose end date is already in the past. Please update the election dates first.",
+          });
+        }
+      }
+
       election.isDraft = isDraft;
     }
 
@@ -341,6 +360,91 @@ router.put("/:id", verifyToken, requireAdmin, async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "An internal server error occurred while updating the election.",
+    });
+  }
+});
+
+// PATCH /api/elections/:id/publish (Admin: publish draft election)
+router.patch("/:id/publish", verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid election ID format.",
+      });
+    }
+
+    const election = await Election.findById(id);
+    if (!election) {
+      return res.status(404).json({
+        success: false,
+        message: "Election not found.",
+      });
+    }
+
+    if (!election.isDraft) {
+      const currentStatus = Election.deriveStatus(election);
+      return res.status(400).json({
+        success: false,
+        message: `Election is already published with status "${currentStatus}".`,
+      });
+    }
+
+    // Candidate requirements validation: an election must have at least one nominated candidate
+    const candidateCount = await Candidate.countDocuments({ electionId: id });
+    if (candidateCount === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot publish an election without nominated candidates. Please add at least one candidate before publishing.",
+      });
+    }
+
+    // Election date validation: end date must be in the future and later than start date
+    const now = new Date();
+    const end = new Date(election.endDate);
+    const start = new Date(election.startDate);
+
+    if (end <= now) {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot publish an election whose end date is already in the past. Please update the election dates first.",
+      });
+    }
+
+    if (end <= start) {
+      return res.status(400).json({
+        success: false,
+        message: "Election end date must be later than the start date.",
+      });
+    }
+
+    election.isDraft = false;
+    await election.save();
+
+    const derivedStatus = Election.deriveStatus(election);
+
+    return res.status(200).json({
+      success: true,
+      message: `Election "${election.title}" published successfully! Status is now "${derivedStatus}".`,
+      election: {
+        id: election._id,
+        title: election.title,
+        description: election.description,
+        startDate: election.startDate,
+        endDate: election.endDate,
+        isDraft: election.isDraft,
+        status: derivedStatus,
+        voteCount: election.voteCount,
+        candidateCount,
+        updatedAt: election.updatedAt,
+      },
+    });
+  } catch (error) {
+    console.error("[Elections] PATCH /:id/publish error:", error.message);
+    return res.status(500).json({
+      success: false,
+      message: "An internal server error occurred while publishing the election.",
     });
   }
 });

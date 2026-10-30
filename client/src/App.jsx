@@ -28,6 +28,8 @@ import {
   Trash2,
   Calendar,
   ChevronRight,
+  Send,
+  Edit3,
 } from "lucide-react";
 import "./App.css";
 
@@ -1218,12 +1220,23 @@ function ElectionsView({
 
   // Modal states
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
   const [showCandidateModal, setShowCandidateModal] = useState(false);
   const [modalLoading, setModalLoading] = useState(false);
   const [modalError, setModalError] = useState(null);
+  const [publishLoading, setPublishLoading] = useState(false);
 
   // Action toast message
   const [actionNotice, setActionNotice] = useState(null);
+
+  // Edit Election form state
+  const [editForm, setEditForm] = useState({
+    title: "",
+    description: "",
+    startDate: "",
+    endDate: "",
+    isDraft: false,
+  });
 
   // Create Election form state
   const [createForm, setCreateForm] = useState({
@@ -1545,6 +1558,136 @@ function ElectionsView({
     }
   };
 
+  const handlePublishElection = async (electionId, electionTitle) => {
+    // If details are loaded for this election, check candidate count
+    if (selectedElectionData?.election?.id === electionId) {
+      const count = selectedElectionData.candidates?.length || 0;
+      if (count === 0) {
+        alert(
+          `Cannot publish "${electionTitle}": The candidate slate is currently empty. Please nominate at least one candidate before publishing.`
+        );
+        return;
+      }
+    }
+
+    const confirmed = window.confirm(
+      `Publish "${electionTitle}" to voters?\n\nOnce published, the election will become visible to all registered voters and guests. Because its start date is in the future, its status will be Scheduled.`
+    );
+    if (!confirmed) return;
+
+    setPublishLoading(true);
+    try {
+      const res = await fetch(`/api/elections/${electionId}/publish`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${currentUser.token}`,
+        },
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        alert(data.message || "Failed to publish election.");
+      } else {
+        setActionNotice(
+          `Election "${electionTitle}" published successfully! Status is now ${data.election.status}.`
+        );
+        await onRefresh();
+        if (selectedElectionId === electionId) {
+          await refreshDetails();
+        }
+      }
+    } catch {
+      alert("Network error: Could not complete election publishing.");
+    } finally {
+      setPublishLoading(false);
+    }
+  };
+
+  const handleOpenEditModal = () => {
+    if (!selectedElectionData?.election) return;
+    const el = selectedElectionData.election;
+
+    const toLocalDatetimeInput = (dateStr) => {
+      if (!dateStr) return "";
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return "";
+      return new Date(d.getTime() - d.getTimezoneOffset() * 60000)
+        .toISOString()
+        .slice(0, 16);
+    };
+
+    setEditForm({
+      title: el.title || "",
+      description: el.description || "",
+      startDate: toLocalDatetimeInput(el.startDate),
+      endDate: toLocalDatetimeInput(el.endDate),
+      isDraft: Boolean(el.isDraft),
+    });
+    setModalError(null);
+    setShowEditModal(true);
+  };
+
+  const handleEditElectionSubmit = async (e) => {
+    e.preventDefault();
+    if (!selectedElectionId) return;
+    setModalError(null);
+
+    const { title, description, startDate, endDate, isDraft } = editForm;
+
+    if (!title.trim() || !description.trim() || !startDate || !endDate) {
+      setModalError("Please complete all required fields.");
+      return;
+    }
+
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      setModalError("Please provide valid dates and times.");
+      return;
+    }
+
+    if (end <= start) {
+      setModalError("End date must be later than the start date.");
+      return;
+    }
+
+    setModalLoading(true);
+
+    try {
+      const res = await fetch(`/api/elections/${selectedElectionId}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${currentUser.token}`,
+        },
+        body: JSON.stringify({
+          title: title.trim(),
+          description: description.trim(),
+          startDate: start.toISOString(),
+          endDate: end.toISOString(),
+          isDraft: Boolean(isDraft),
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok || !data.success) {
+        setModalError(data.message || "Failed to update election.");
+      } else {
+        setShowEditModal(false);
+        await refreshDetails();
+        await onRefresh();
+        setActionNotice(`Election "${data.election.title}" updated successfully!`);
+      }
+    } catch {
+      setModalError("Server connection failed. Please try again.");
+    } finally {
+      setModalLoading(false);
+    }
+  };
+
   // Filter calculations
   const filteredElections = elections.filter((e) => {
     const matchesSearch =
@@ -1699,8 +1842,88 @@ function ElectionsView({
                   </div>
                 </div>
 
+                {/* Draft Status Action Banner for Admin */}
+                {selectedElectionData.election.isDraft && isAdmin && (
+                  <div className="draft-alert-banner">
+                    <div className="draft-alert-content">
+                      <div className="draft-alert-icon">
+                        <Clock3 size={18} />
+                      </div>
+                      <div>
+                        <strong>Unpublished Draft Election</strong>
+                        <p>
+                          This election is currently in draft mode and hidden from voters.
+                          {selectedElectionData.candidates?.length === 0
+                            ? " Please add candidates to the slate before publishing."
+                            : ` ${selectedElectionData.candidates.length} candidate${selectedElectionData.candidates.length > 1 ? "s" : ""} nominated. Ready to publish to voters.`}
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="publish-election-btn"
+                      onClick={() =>
+                        handlePublishElection(
+                          selectedElectionData.election.id,
+                          selectedElectionData.election.title
+                        )
+                      }
+                      disabled={publishLoading}
+                    >
+                      {publishLoading ? (
+                        <>
+                          <Loader2 size={14} className="spinner" />
+                          Publishing...
+                        </>
+                      ) : (
+                        <>
+                          <Send size={14} />
+                          Publish Election
+                        </>
+                      )}
+                    </button>
+                  </div>
+                )}
+
                 {isAdmin && (
                   <div className="hero-admin-actions">
+                    {selectedElectionData.election.isDraft && (
+                      <button
+                        type="button"
+                        className="publish-election-btn"
+                        onClick={() =>
+                          handlePublishElection(
+                            selectedElectionData.election.id,
+                            selectedElectionData.election.title
+                          )
+                        }
+                        disabled={publishLoading}
+                      >
+                        {publishLoading ? (
+                          <>
+                            <Loader2 size={15} className="spinner" />
+                            Publishing...
+                          </>
+                        ) : (
+                          <>
+                            <Send size={15} />
+                            Publish Election
+                          </>
+                        )}
+                      </button>
+                    )}
+
+                    {selectedElectionData.election.voteCount === 0 && (
+                      <button
+                        type="button"
+                        className="secondary-action-button"
+                        onClick={handleOpenEditModal}
+                      >
+                        <Edit3 size={15} />
+                        Edit Details
+                      </button>
+                    )}
+
                     <button
                       type="button"
                       className="primary-button"
@@ -2091,6 +2314,22 @@ function ElectionsView({
                     </div>
 
                     <div style={{ display: "flex", gap: "6px" }}>
+                      {isAdmin && election.isDraft && (
+                        <button
+                          type="button"
+                          className="publish-card-btn"
+                          title="Publish this election to voters"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handlePublishElection(election.id, election.title);
+                          }}
+                          disabled={publishLoading}
+                        >
+                          <Send size={13} />
+                          Publish
+                        </button>
+                      )}
+
                       {isAdmin && election.voteCount === 0 && (
                         <button
                           type="button"
@@ -2269,6 +2508,123 @@ function ElectionsView({
                     <>
                       <Plus size={15} />
                       Create Election
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Edit Election (Admin Only) */}
+      {showEditModal && (
+        <div className="modal-overlay" role="dialog" aria-modal="true">
+          <div className="modal-dialog">
+            <div className="modal-header">
+              <h3>Edit Election Details</h3>
+              <button
+                type="button"
+                className="modal-close-btn"
+                onClick={() => !modalLoading && setShowEditModal(false)}
+                aria-label="Close modal"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={handleEditElectionSubmit}>
+              <div className="modal-body">
+                {modalError && (
+                  <div className="form-alert error">
+                    <AlertCircle size={16} />
+                    <span>{modalError}</span>
+                  </div>
+                )}
+
+                <div className="form-group">
+                  <label htmlFor="edit-title">Election Title *</label>
+                  <input
+                    id="edit-title"
+                    type="text"
+                    className="form-input"
+                    value={editForm.title}
+                    onChange={(e) => setEditForm({ ...editForm, title: e.target.value })}
+                    disabled={modalLoading}
+                    required
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label htmlFor="edit-desc">Description *</label>
+                  <textarea
+                    id="edit-desc"
+                    className="form-textarea"
+                    value={editForm.description}
+                    onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
+                    disabled={modalLoading}
+                    required
+                  />
+                </div>
+
+                <div className="form-row">
+                  <div className="form-group">
+                    <label htmlFor="edit-start">Start Date &amp; Time *</label>
+                    <input
+                      id="edit-start"
+                      type="datetime-local"
+                      className="form-input"
+                      value={editForm.startDate}
+                      onChange={(e) => setEditForm({ ...editForm, startDate: e.target.value })}
+                      disabled={modalLoading}
+                      required
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label htmlFor="edit-end">End Date &amp; Time *</label>
+                    <input
+                      id="edit-end"
+                      type="datetime-local"
+                      className="form-input"
+                      value={editForm.endDate}
+                      onChange={(e) => setEditForm({ ...editForm, endDate: e.target.value })}
+                      disabled={modalLoading}
+                      required
+                    />
+                  </div>
+                </div>
+
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={editForm.isDraft}
+                    onChange={(e) => setEditForm({ ...editForm, isDraft: e.target.checked })}
+                    disabled={modalLoading}
+                  />
+                  <span>Save as Draft (hidden from voters until published)</span>
+                </label>
+              </div>
+
+              <div className="modal-footer">
+                <button
+                  type="button"
+                  className="secondary-action-button"
+                  onClick={() => setShowEditModal(false)}
+                  disabled={modalLoading}
+                >
+                  Cancel
+                </button>
+                <button type="submit" className="primary-button" disabled={modalLoading}>
+                  {modalLoading ? (
+                    <>
+                      <Loader2 size={15} className="spinner" />
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 size={15} />
+                      Save Changes
                     </>
                   )}
                 </button>
