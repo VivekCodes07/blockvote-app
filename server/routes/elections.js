@@ -4,6 +4,8 @@ const jwt = require("jsonwebtoken");
 const Election = require("../models/Election");
 const Candidate = require("../models/Candidate");
 const Voter = require("../models/Voter");
+const Ballot = require("../models/Ballot");
+const Participation = require("../models/Participation");
 const { verifyToken, requireAdmin } = require("../middleware/auth");
 
 const router = express.Router();
@@ -246,6 +248,25 @@ router.put("/:id", verifyToken, requireAdmin, async (req, res) => {
 
     const { title, description, startDate, endDate, isDraft } = req.body || {};
 
+    // Unsafe Edits Protection: Once votes have been recorded, draft state and start date cannot be unsafely modified
+    const ballotCount = await Ballot.countDocuments({ electionId: id });
+    const hasVotes = election.voteCount > 0 || ballotCount > 0;
+
+    if (hasVotes) {
+      if (isDraft === true) {
+        return res.status(400).json({
+          success: false,
+          message: "Cannot revert an election to draft after votes have been recorded.",
+        });
+      }
+      if (startDate !== undefined && new Date(startDate).getTime() !== election.startDate.getTime()) {
+        return res.status(400).json({
+          success: false,
+          message: "Cannot modify start date after voting has started.",
+        });
+      }
+    }
+
     if (title !== undefined) {
       if (typeof title !== "string" || title.trim().length < 3) {
         return res.status(400).json({
@@ -344,15 +365,18 @@ router.delete("/:id", verifyToken, requireAdmin, async (req, res) => {
     }
 
     // Data Integrity Rule: Prevent deleting after votes have been recorded
-    if (election.voteCount > 0) {
+    const ballotCount = await Ballot.countDocuments({ electionId: id });
+    if (election.voteCount > 0 || ballotCount > 0) {
       return res.status(400).json({
         success: false,
         message: "Cannot delete an election after votes have been recorded.",
       });
     }
 
-    // Cascade delete associated candidates
+    // Cascade delete associated candidates and any pre-vote records
     await Candidate.deleteMany({ electionId: id });
+    await Participation.deleteMany({ electionId: id });
+    await Ballot.deleteMany({ electionId: id });
     await Election.findByIdAndDelete(id);
 
     return res.status(200).json({
@@ -455,6 +479,18 @@ router.put("/:id/candidates/:candidateId", verifyToken, requireAdmin, async (req
 
     const { name, party, biography, imageUrl } = req.body || {};
 
+    // Data Integrity Rule: Prevent modifying candidate name/party after votes recorded
+    const candidateBallots = await Ballot.countDocuments({ candidateId });
+    if (candidate.voteCount > 0 || candidateBallots > 0) {
+      if ((name !== undefined && name.trim() !== candidate.name) ||
+          (party !== undefined && party.trim() !== candidate.party)) {
+        return res.status(400).json({
+          success: false,
+          message: "Cannot modify candidate identity (name or party) after votes have been recorded.",
+        });
+      }
+    }
+
     if (name !== undefined) {
       if (typeof name !== "string" || name.trim().length < 2) {
         return res.status(400).json({
@@ -530,7 +566,14 @@ router.delete("/:id/candidates/:candidateId", verifyToken, requireAdmin, async (
     const election = await Election.findById(id);
 
     // Data Integrity Rule: Prevent deleting candidate after votes recorded
-    if (candidate.voteCount > 0 || (election && election.voteCount > 0)) {
+    const candidateBallots = await Ballot.countDocuments({ candidateId });
+    const electionBallots = await Ballot.countDocuments({ electionId: id });
+    if (
+      candidate.voteCount > 0 ||
+      candidateBallots > 0 ||
+      (election && election.voteCount > 0) ||
+      electionBallots > 0
+    ) {
       return res.status(400).json({
         success: false,
         message: "Cannot remove candidate after votes have been recorded in this election.",

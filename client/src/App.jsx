@@ -97,6 +97,9 @@ function App() {
   const [electionsError, setElectionsError] = useState(null);
   const [selectedElectionId, setSelectedElectionId] = useState(null);
 
+  // Voter's past participations (Feature 7)
+  const [participatedElectionIds, setParticipatedElectionIds] = useState([]);
+
   // Active voter session (restored from localStorage)
   const [currentUser, setCurrentUser] = useState(() => {
     try {
@@ -144,6 +147,29 @@ function App() {
     };
   }, [currentUser?.token]);
 
+  // Load voter participations on session load/update (Feature 7)
+  useEffect(() => {
+    if (!currentUser?.token || currentUser?.voter?.role !== "voter") {
+      return;
+    }
+
+    let isMounted = true;
+    fetch("/api/votes/my-participations", {
+      headers: { Authorization: `Bearer ${currentUser.token}` },
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (isMounted && data?.success && Array.isArray(data.participatedElectionIds)) {
+          setParticipatedElectionIds(data.participatedElectionIds);
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      isMounted = false;
+    };
+  }, [currentUser?.token, currentUser?.voter?.role]);
+
   const handleLoginSuccess = (authData) => {
     localStorage.setItem("blockvote_auth", JSON.stringify(authData));
     setCurrentUser(authData);
@@ -153,6 +179,14 @@ function App() {
   const handleSignOut = () => {
     localStorage.removeItem("blockvote_auth");
     setCurrentUser(null);
+    setParticipatedElectionIds([]);
+  };
+
+  const handleVoteSuccess = (electionId) => {
+    setParticipatedElectionIds((prev) =>
+      prev.includes(electionId) ? prev : [...prev, electionId]
+    );
+    fetchElections();
   };
 
   const fetchElections = async () => {
@@ -451,6 +485,8 @@ function App() {
               onGoToLogin={() => setActiveNav("Voters")}
               selectedElectionId={selectedElectionId}
               setSelectedElectionId={setSelectedElectionId}
+              participatedElectionIds={participatedElectionIds}
+              onVoteSuccess={handleVoteSuccess}
             />
           ) : (
             <>
@@ -602,6 +638,11 @@ function App() {
                         </div>
                       </div>
                       <div className="election-right">
+                        {participatedElectionIds.includes(election.id) && (
+                          <span className="voted-badge" style={{ marginBottom: "2px" }}>
+                            <CheckCircle2 size={12} /> Ballot Submitted
+                          </span>
+                        )}
                         <span className={`status-pill ${election.status.toLowerCase()}`}>
                           {election.status}
                         </span>
@@ -1154,6 +1195,8 @@ function ElectionsView({
   onGoToLogin,
   selectedElectionId,
   setSelectedElectionId,
+  participatedElectionIds = [],
+  onVoteSuccess,
 }) {
   const isAdmin = currentUser?.voter?.role === "admin";
   const [activeFilter, setActiveFilter] = useState("all");
@@ -1161,6 +1204,17 @@ function ElectionsView({
   const [selectedElectionData, setSelectedElectionData] = useState(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [detailsError, setDetailsError] = useState(null);
+
+  // Voting state (Feature 7)
+  const [voterParticipation, setVoterParticipation] = useState({
+    electionId: null,
+    hasVoted: false,
+    participatedAt: null,
+  });
+  const [selectedCandidateForVote, setSelectedCandidateForVote] = useState(null);
+  const [showVoteModal, setShowVoteModal] = useState(false);
+  const [voteSubmitting, setVoteSubmitting] = useState(false);
+  const [voteError, setVoteError] = useState(null);
 
   // Modal states
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -1229,6 +1283,76 @@ function ElectionsView({
       isMounted = false;
     };
   }, [selectedElectionId, currentUser?.token]);
+
+  // Check participation status for the selected election (Feature 7)
+  useEffect(() => {
+    if (!selectedElectionId || !currentUser?.token || currentUser?.voter?.role !== "voter") {
+      return;
+    }
+
+    let isMounted = true;
+    fetch(`/api/votes/status/${selectedElectionId}`, {
+      headers: { Authorization: `Bearer ${currentUser.token}` },
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (isMounted && data?.success) {
+          setVoterParticipation({
+            electionId: selectedElectionId,
+            hasVoted: Boolean(data.hasVoted),
+            participatedAt: data.participatedAt || null,
+          });
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedElectionId, currentUser?.token, currentUser?.voter?.role]);
+
+  const handleCastVoteSubmit = async () => {
+    if (!selectedCandidateForVote || !selectedElectionData?.election) return;
+    setVoteError(null);
+    setVoteSubmitting(true);
+
+    try {
+      const res = await fetch("/api/votes", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${currentUser.token}`,
+        },
+        body: JSON.stringify({
+          electionId: selectedElectionData.election.id,
+          candidateId: selectedCandidateForVote.id,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok || !data.success) {
+        setVoteError(data.message || "Failed to submit your vote.");
+      } else {
+        setShowVoteModal(false);
+        setVoterParticipation({
+          electionId: selectedElectionData.election.id,
+          hasVoted: true,
+          participatedAt: new Date().toISOString(),
+        });
+        setActionNotice("Your vote has been cast successfully! Your choice has been recorded anonymously.");
+        if (onVoteSuccess) {
+          onVoteSuccess(selectedElectionData.election.id);
+        }
+        await refreshDetails();
+        await onRefresh();
+      }
+    } catch {
+      setVoteError("Network error: Unable to connect to voting service. Please try again.");
+    } finally {
+      setVoteSubmitting(false);
+    }
+  };
 
   const refreshDetails = async () => {
     if (!selectedElectionId) return;
@@ -1439,6 +1563,14 @@ function ElectionsView({
   const completedCount = elections.filter((e) => e.status === "Completed").length;
   const draftCount = elections.filter((e) => e.isDraft).length;
 
+  const hasUserVoted =
+    Boolean(
+      (voterParticipation.hasVoted &&
+        voterParticipation.electionId === selectedElectionData?.election?.id) ||
+        (selectedElectionData?.election?.id &&
+          participatedElectionIds.includes(selectedElectionData.election.id))
+    );
+
   return (
     <div className="elections-view-container">
       {/* Top Header */}
@@ -1604,6 +1736,75 @@ function ElectionsView({
                 )}
               </div>
 
+              {/* Voter Participation Status Banner (Feature 7) */}
+              {!currentUser ? (
+                <div className="voter-status-banner inactive">
+                  <LogIn size={20} />
+                  <div>
+                    <strong>Sign In to Participate</strong>
+                    <p>
+                      You are viewing this election slate as a guest. Sign in with your registered voter account to cast an anonymous ballot.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="secondary-action-button"
+                    onClick={onGoToLogin}
+                    style={{ marginLeft: "auto", flexShrink: 0 }}
+                  >
+                    <LogIn size={14} /> Sign In
+                  </button>
+                </div>
+              ) : isAdmin ? (
+                <div className="voter-status-banner inactive">
+                  <ShieldCheck size={20} />
+                  <div>
+                    <strong>Administrator Account Active</strong>
+                    <p>
+                      Administrators manage election slates and parameters, but cannot cast ballots to ensure electoral neutrality.
+                    </p>
+                  </div>
+                </div>
+              ) : hasUserVoted ? (
+                <div className="voter-status-banner voted">
+                  <CheckCircle2 size={20} />
+                  <div>
+                    <strong>Ballot Cast &amp; Verified</strong>
+                    <p>
+                      You have already voted in this election{voterParticipation.participatedAt ? ` on ${formatDateTime(voterParticipation.participatedAt)}` : ""}. Your choice is recorded anonymously in the ballot box.
+                    </p>
+                  </div>
+                  <span className="voted-badge" style={{ marginLeft: "auto", flexShrink: 0 }}>
+                    <CheckCircle2 size={12} /> One Vote Limit Enforced
+                  </span>
+                </div>
+              ) : selectedElectionData.election.status === "Active" ? (
+                <div className="voter-status-banner eligible">
+                  <Vote size={20} />
+                  <div>
+                    <strong>Voting is Open · You are eligible to vote</strong>
+                    <p>
+                      Select your preferred candidate from the slate below. Each registered voter is permitted exactly one anonymous ballot.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="voter-status-banner inactive">
+                  <Clock3 size={20} />
+                  <div>
+                    <strong>Voting Unavailable</strong>
+                    <p>
+                      {selectedElectionData.election.status === "Scheduled" &&
+                        "Voting has not opened yet. Check back when the scheduled voting window begins."}
+                      {selectedElectionData.election.status === "Completed" &&
+                        "Voting for this election has closed. New ballots can no longer be submitted."}
+                      {selectedElectionData.election.status === "Draft" &&
+                        "This election is currently an unpublished draft."}
+                    </p>
+                  </div>
+                </div>
+              )}
+
               {/* Candidate Slate Section */}
               <div className="candidates-section">
                 <div className="candidates-header">
@@ -1660,7 +1861,7 @@ function ElectionsView({
                             <strong>{candidate.voteCount}</strong> votes
                           </span>
 
-                          {isAdmin && (
+                          {isAdmin ? (
                             <button
                               type="button"
                               className="danger-button"
@@ -1678,7 +1879,40 @@ function ElectionsView({
                               <Trash2 size={13} />
                               Remove
                             </button>
-                          )}
+                          ) : !currentUser ? (
+                            selectedElectionData.election.status === "Active" ? (
+                              <button
+                                type="button"
+                                className="card-action-btn"
+                                onClick={onGoToLogin}
+                                style={{ padding: "6px 12px", fontSize: "12px" }}
+                              >
+                                <LogIn size={13} /> Sign In
+                              </button>
+                            ) : null
+                          ) : currentUser.voter?.role === "voter" ? (
+                            hasUserVoted ? (
+                              <span className="voted-badge">
+                                <CheckCircle2 size={12} /> Ballot Submitted
+                              </span>
+                            ) : selectedElectionData.election.status === "Active" ? (
+                              <button
+                                type="button"
+                                className="vote-candidate-btn"
+                                onClick={() => {
+                                  setSelectedCandidateForVote(candidate);
+                                  setVoteError(null);
+                                  setShowVoteModal(true);
+                                }}
+                              >
+                                <Vote size={13} /> Vote
+                              </button>
+                            ) : (
+                              <span className="vote-stat-label">
+                                Voting {selectedElectionData.election.status.toLowerCase()}
+                              </span>
+                            )
+                          ) : null}
                         </div>
                       </div>
                     ))}
@@ -1809,11 +2043,25 @@ function ElectionsView({
                       </span>
                     </div>
 
-                    {election.isDraft && (
-                      <span className="admin-badge" style={{ background: "#f59e0b1a", color: "#fbbf24", borderColor: "#f59e0b33" }}>
-                        Draft
-                      </span>
-                    )}
+                    <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                      {participatedElectionIds.includes(election.id) && (
+                        <span className="voted-badge">
+                          <CheckCircle2 size={12} /> Voted
+                        </span>
+                      )}
+                      {!participatedElectionIds.includes(election.id) &&
+                        election.status === "Active" &&
+                        currentUser?.voter?.role === "voter" && (
+                          <span className="vote-open-badge">
+                            <Vote size={12} /> Ready to Vote
+                          </span>
+                        )}
+                      {election.isDraft && (
+                        <span className="admin-badge" style={{ background: "#f59e0b1a", color: "#fbbf24", borderColor: "#f59e0b33" }}>
+                          Draft
+                        </span>
+                      )}
+                    </div>
                   </div>
 
                   <h3 className="election-card-title">{election.title}</h3>
@@ -1862,8 +2110,22 @@ function ElectionsView({
                         className="card-action-btn"
                         onClick={() => setSelectedElectionId(election.id)}
                       >
-                        View Slate
-                        <ChevronRight size={14} />
+                        {participatedElectionIds.includes(election.id) ? (
+                          <>
+                            View Details
+                            <ChevronRight size={14} />
+                          </>
+                        ) : election.status === "Active" && currentUser?.voter?.role === "voter" ? (
+                          <>
+                            <Vote size={14} />
+                            Vote Now
+                          </>
+                        ) : (
+                          <>
+                            View Slate
+                            <ChevronRight size={14} />
+                          </>
+                        )}
                       </button>
                     </div>
                   </div>
@@ -2119,6 +2381,88 @@ function ElectionsView({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Confirm Vote (Feature 7) */}
+      {showVoteModal && selectedCandidateForVote && selectedElectionData?.election && (
+        <div className="modal-overlay" role="dialog" aria-modal="true">
+          <div className="modal-dialog">
+            <div className="modal-header">
+              <h3>Confirm Your Ballot</h3>
+              <button
+                type="button"
+                className="modal-close-btn"
+                onClick={() => !voteSubmitting && setShowVoteModal(false)}
+                aria-label="Close modal"
+                disabled={voteSubmitting}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="modal-body">
+              {voteError && (
+                <div className="form-alert error">
+                  <AlertCircle size={16} />
+                  <span>{voteError}</span>
+                </div>
+              )}
+
+              <p style={{ margin: "0 0 16px 0", color: "#a5a9c0", fontSize: "14px", lineHeight: "1.5" }}>
+                You are about to cast your official ballot for{" "}
+                <strong style={{ color: "#fff" }}>{selectedElectionData.election.title}</strong>.
+              </p>
+
+              <div className="vote-confirm-box">
+                <span className="hero-info-label" style={{ display: "block", marginBottom: "4px" }}>
+                  Selected Candidate
+                </span>
+                <div className="vote-confirm-candidate">
+                  {selectedCandidateForVote.name}
+                </div>
+                <div className="vote-confirm-party">
+                  {selectedCandidateForVote.party}
+                </div>
+              </div>
+
+              <div className="vote-confirm-warning">
+                <AlertCircle size={16} style={{ flexShrink: 0, marginTop: "2px" }} />
+                <span>
+                  <strong>One-Vote Rule:</strong> Once submitted, your vote is permanent and cannot be changed or recalled. Your participation is recorded to prevent duplicate voting, while your ballot selection remains untraceable to your identity.
+                </span>
+              </div>
+            </div>
+
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="secondary-action-button"
+                onClick={() => setShowVoteModal(false)}
+                disabled={voteSubmitting}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="primary-button"
+                onClick={handleCastVoteSubmit}
+                disabled={voteSubmitting}
+              >
+                {voteSubmitting ? (
+                  <>
+                    <Loader2 size={15} className="spinner" />
+                    Submitting Ballot...
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 size={15} />
+                    Confirm &amp; Submit Vote
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}

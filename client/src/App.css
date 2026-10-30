@@ -2301,3 +2301,152 @@ input:focus-visible {
   }
 }
 
+/* ==========================================================================
+   Feature 7: One Vote Per Election Styles
+   ========================================================================== */
+
+.voted-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: #10b98118;
+  color: #34d399;
+  border: 1px solid #10b98133;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+.vote-open-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: #6366f118;
+  color: #818cf8;
+  border: 1px solid #6366f133;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.voter-status-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.voter-status-banner.voted {
+  background: #10b98114;
+  border: 1px solid #10b98133;
+  color: #a7f3d0;
+}
+
+.voter-status-banner.voted .banner-icon-box {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  background: #10b98124;
+  color: #34d399;
+  flex-shrink: 0;
+}
+
+.voter-status-banner.eligible {
+  background: #7966ff14;
+  border: 1px solid #7966ff33;
+  color: #d8d3ff;
+}
+
+.voter-status-banner.eligible .banner-icon-box {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  background: #7966ff24;
+  color: #9d8cff;
+  flex-shrink: 0;
+}
+
+.voter-status-banner.inactive {
+  background: #161826;
+  border: 1px solid #282c44;
+  color: #9da1b8;
+}
+
+.voter-status-banner.inactive .banner-icon-box {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  background: #202438;
+  color: #8c90a6;
+  flex-shrink: 0;
+}
+
+.vote-candidate-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: linear-gradient(135deg, #7966ff, #5541d7);
+  color: #ffffff;
+  border: 0;
+  padding: 7px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  transition: all 140ms ease;
+  cursor: pointer;
+}
+
+.vote-candidate-btn:hover:not(:disabled) {
+  filter: brightness(1.12);
+  transform: translateY(-1px);
+}
+
+.vote-candidate-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.vote-confirm-box {
+  background: #0a0c16;
+  border: 1px solid #23273e;
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.vote-confirm-candidate {
+  font: 700 17px "Space Grotesk", sans-serif;
+  color: #ffffff;
+}
+
+.vote-confirm-party {
+  color: #9d8cff;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.vote-confirm-warning {
+  font-size: 12px;
+  color: #fbbf24;
+  background: #f59e0b14;
+  border: 1px solid #f59e0b33;
+  padding: 11px 14px;
+  border-radius: 9px;
+  line-height: 1.55;
+}
+
+
