@@ -13,28 +13,101 @@ const router = express.Router();
 const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
 
 /**
+ * Detect whether an error indicates that MongoDB does not support transactions
+ * (e.g. standalone mongod instance without replica set).
+ */
+function isTransactionUnsupportedError(err) {
+  if (!err) return false;
+  const msg = String(err.message || "").toLowerCase();
+  const codeName = String(err.codeName || "");
+  return (
+    err.code === 20 ||
+    codeName === "IllegalOperation" ||
+    msg.includes("transaction numbers are only allowed on a replica set") ||
+    msg.includes("does not support multi-document transactions") ||
+    msg.includes("transactions are not supported") ||
+    msg.includes("standalone")
+  );
+}
+
+/**
+ * Detect whether an error is transient and can be retried (e.g. write conflict under concurrency).
+ */
+function isTransientTransactionError(err) {
+  if (!err) return false;
+  return (
+    err.code === 112 ||
+    (Array.isArray(err.errorLabels) && err.errorLabels.includes("TransientTransactionError")) ||
+    (err.message && err.message.includes("WriteConflict")) ||
+    (err.message && err.message.includes("Please retry your operation"))
+  );
+}
+
+/**
+ * Detect whether a commit error is ambiguous (commit status unknown).
+ * If unknown, committing might have succeeded on the server.
+ * Compensating fallback MUST NOT run after this to prevent duplicate writes or count corruption.
+ */
+function isUnknownCommitResult(err) {
+  if (!err) return false;
+  return Array.isArray(err.errorLabels) && err.errorLabels.includes("UnknownTransactionCommitResult");
+}
+
+/**
  * Compensating write fallback strategy
- * Used if MongoDB transactions are unavailable (e.g. standalone test environments).
- * Handles partial failures with compensating rollbacks.
+ *
+ * IMPORTANT NOTE ON ATOMICITY:
+ * Compensating writes are a sequential best-effort fallback strategy for environments
+ * where multi-document transactions are genuinely unavailable (e.g., standalone local mongod).
+ * Unlike replica-set transactions, sequential compensating writes are NOT atomic.
+ * If a process or network failure occurs mid-sequence, partial writes may persist
+ * until compensating rollback or manual reconciliation takes place.
+ *
+ * Reliability guarantees:
+ * - Checks matchedCount for both election and candidate updates.
+ * - If any update fails to match its target document, the vote is treated as unsuccessful.
+ * - Tracks every completed write step-by-step.
+ * - Attempts all required rollback operations even if one rollback fails.
+ * - Records rollback failures in structured server-side logs without logging voter choices or personal data.
+ * - Never returns a successful vote response if all required writes did not complete.
+ * - If rollback cannot restore consistency, clearly reports that manual reconciliation is required.
  */
 async function executeCompensatingVote(res, voterId, electionId, candidateId) {
-  let participationCreated = false;
-  let ballotCreated = null;
-  let electionIncremented = false;
+  const completedWrites = {
+    participation: false,
+    ballotId: null,
+    electionIncremented: false,
+    candidateIncremented: false,
+  };
 
   try {
     // 1. Create Participation record first (enforced by unique compound index)
     await Participation.create({ voterId, electionId });
-    participationCreated = true;
+    completedWrites.participation = true;
 
-    // 2. Create anonymous Ballot record (no voter ID)
-    ballotCreated = await Ballot.create({ electionId, candidateId });
+    // 2. Create anonymous Ballot record (strictly omits voter identifier)
+    const ballot = await Ballot.create({ electionId, candidateId });
+    completedWrites.ballotId = ballot._id;
 
-    // 3. Atomically increment election and candidate vote counts
-    await Election.findByIdAndUpdate(electionId, { $inc: { voteCount: 1 } });
-    electionIncremented = true;
+    // 3. Increment election vote count (verifying document matched)
+    const electionUpdateResult = await Election.updateOne(
+      { _id: electionId },
+      { $inc: { voteCount: 1 } }
+    );
+    if (!electionUpdateResult || electionUpdateResult.matchedCount !== 1) {
+      throw new Error("Election document could not be matched for vote count increment");
+    }
+    completedWrites.electionIncremented = true;
 
-    await Candidate.findByIdAndUpdate(candidateId, { $inc: { voteCount: 1 } });
+    // 4. Increment candidate vote count (verifying document matched)
+    const candidateUpdateResult = await Candidate.updateOne(
+      { _id: candidateId, electionId },
+      { $inc: { voteCount: 1 } }
+    );
+    if (!candidateUpdateResult || candidateUpdateResult.matchedCount !== 1) {
+      throw new Error("Candidate document could not be matched for vote count increment");
+    }
+    completedWrites.candidateIncremented = true;
 
     return res.status(201).json({
       success: true,
@@ -49,22 +122,117 @@ async function executeCompensatingVote(res, voterId, electionId, candidateId) {
       });
     }
 
-    console.error("[Votes] Compensating rollback initiated due to error:", err.message);
+    console.error("[Votes] Compensating write failure during vote execution:", {
+      stage: "write_sequence",
+      errorName: err.name,
+      errorMessage: err.message,
+      completedSteps: {
+        participation: completedWrites.participation,
+        ballot: Boolean(completedWrites.ballotId),
+        electionCount: completedWrites.electionIncremented,
+        candidateCount: completedWrites.candidateIncremented,
+      },
+    });
 
-    // Roll back in reverse order to maintain consistency
-    if (electionIncremented) {
-      await Election.findByIdAndUpdate(electionId, { $inc: { voteCount: -1 } }).catch(() => {});
+    // Execute compensating rollbacks in reverse order
+    // Ensure ALL rollbacks are attempted independently even if one fails
+    const rollbackFailures = [];
+
+    if (completedWrites.candidateIncremented) {
+      try {
+        const rollbackCandResult = await Candidate.updateOne(
+          { _id: candidateId, electionId },
+          { $inc: { voteCount: -1 } }
+        );
+        if (!rollbackCandResult || rollbackCandResult.matchedCount !== 1) {
+          rollbackFailures.push({
+            step: "rollback_candidate_count",
+            reason: "Target candidate document not matched during decrement",
+          });
+        }
+      } catch (rollbackErr) {
+        rollbackFailures.push({
+          step: "rollback_candidate_count",
+          reason: rollbackErr.message,
+        });
+      }
     }
-    if (ballotCreated) {
-      await Ballot.findByIdAndDelete(ballotCreated._id).catch(() => {});
+
+    if (completedWrites.electionIncremented) {
+      try {
+        const rollbackElectionResult = await Election.updateOne(
+          { _id: electionId },
+          { $inc: { voteCount: -1 } }
+        );
+        if (!rollbackElectionResult || rollbackElectionResult.matchedCount !== 1) {
+          rollbackFailures.push({
+            step: "rollback_election_count",
+            reason: "Target election document not matched during decrement",
+          });
+        }
+      } catch (rollbackErr) {
+        rollbackFailures.push({
+          step: "rollback_election_count",
+          reason: rollbackErr.message,
+        });
+      }
     }
-    if (participationCreated) {
-      await Participation.deleteOne({ voterId, electionId }).catch(() => {});
+
+    if (completedWrites.ballotId) {
+      try {
+        const delBallotResult = await Ballot.deleteOne({ _id: completedWrites.ballotId });
+        if (!delBallotResult || delBallotResult.deletedCount !== 1) {
+          rollbackFailures.push({
+            step: "rollback_ballot_record",
+            reason: "Ballot document could not be deleted",
+          });
+        }
+      } catch (rollbackErr) {
+        rollbackFailures.push({
+          step: "rollback_ballot_record",
+          reason: rollbackErr.message,
+        });
+      }
     }
+
+    if (completedWrites.participation) {
+      try {
+        const delPartResult = await Participation.deleteOne({ voterId, electionId });
+        if (!delPartResult || delPartResult.deletedCount !== 1) {
+          rollbackFailures.push({
+            step: "rollback_participation_record",
+            reason: "Participation record could not be deleted",
+          });
+        }
+      } catch (rollbackErr) {
+        rollbackFailures.push({
+          step: "rollback_participation_record",
+          reason: rollbackErr.message,
+        });
+      }
+    }
+
+    if (rollbackFailures.length > 0) {
+      // Structured logging without exposing voter selections or voter personal data
+      console.error("[Votes][CRITICAL] Compensating rollback incomplete; manual database reconciliation required:", {
+        electionId: String(electionId),
+        failedRollbackSteps: rollbackFailures,
+      });
+
+      return res.status(500).json({
+        success: false,
+        message:
+          "A failure occurred while recording your vote and automatic reconciliation could not fully restore consistency. Manual administrator reconciliation is required.",
+      });
+    }
+
+    console.log("[Votes] Compensating rollback completed successfully. All partial writes undone.", {
+      electionId: String(electionId),
+    });
 
     return res.status(500).json({
       success: false,
-      message: "An error occurred while recording your vote. Partial writes were rolled back.",
+      message: "An error occurred while recording your vote. All partial writes were successfully rolled back. Please try again.",
     });
   }
 }
@@ -143,8 +311,12 @@ router.post("/", verifyToken, async (req, res) => {
 
     // MongoDB Multi-Document Transaction with transient conflict retry
     const MAX_RETRIES = 3;
+    let fallbackToCompensating = false;
+
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       let session = null;
+      let transactionStarted = false;
+      let commitAttempted = false;
 
       try {
         // Preliminary check for existing participation
@@ -161,6 +333,7 @@ router.post("/", verifyToken, async (req, res) => {
 
         session = await mongoose.startSession();
         session.startTransaction();
+        transactionStarted = true;
 
         // 1. Insert Participation record (unique index ensures concurrent requests cannot double-participate)
         await Participation.create(
@@ -174,18 +347,27 @@ router.post("/", verifyToken, async (req, res) => {
           { session }
         );
 
-        // 3. Atomically increment election and candidate vote counts
-        await Election.findByIdAndUpdate(
-          election._id,
+        // 3. Atomically increment election vote count (verifying document match)
+        const electionUpdate = await Election.updateOne(
+          { _id: election._id },
           { $inc: { voteCount: 1 } },
           { session }
         );
-        await Candidate.findByIdAndUpdate(
-          candidate._id,
-          { $inc: { voteCount: 1 } },
-          { session }
-        );
+        if (!electionUpdate || electionUpdate.matchedCount !== 1) {
+          throw new Error("Election document could not be matched for vote count increment in transaction");
+        }
 
+        // 4. Atomically increment candidate vote count (verifying document match)
+        const candidateUpdate = await Candidate.updateOne(
+          { _id: candidate._id, electionId: election._id },
+          { $inc: { voteCount: 1 } },
+          { session }
+        );
+        if (!candidateUpdate || candidateUpdate.matchedCount !== 1) {
+          throw new Error("Candidate document could not be matched for vote count increment in transaction");
+        }
+
+        commitAttempted = true;
         await session.commitTransaction();
 
         return res.status(201).json({
@@ -194,13 +376,15 @@ router.post("/", verifyToken, async (req, res) => {
           electionId: election._id,
         });
       } catch (txError) {
-        if (session) {
+        if (session && transactionStarted) {
           try {
             await session.abortTransaction();
-          } catch {}
+          } catch {
+            // Abort may fail if commit already succeeded or transaction aborted by server
+          }
         }
 
-        // Handle duplicate participation caught by unique compound index
+        // Handle duplicate participation caught by unique compound index (permanent, do not retry)
         if (txError.code === 11000) {
           return res.status(409).json({
             success: false,
@@ -208,20 +392,39 @@ router.post("/", verifyToken, async (req, res) => {
           });
         }
 
-        // Check if cluster does not support transactions (fallback to compensating writes)
-        if (
-          txError.message &&
-          (txError.message.includes("Transaction numbers are only allowed on a replica set") ||
-            txError.message.includes("does not support multi-document transactions"))
-        ) {
-          return await executeCompensatingVote(res, voter._id, election._id, candidate._id);
+        // Check if environment explicitly does NOT support multi-document transactions
+        // Crucial safety check: Never fall back to compensating writes if commit was attempted!
+        // The original transaction might have committed on the server.
+        if (!commitAttempted && isTransactionUnsupportedError(txError)) {
+          console.warn("[Votes] MongoDB deployment does not support transactions. Falling back to compensating-write strategy.");
+          fallbackToCompensating = true;
+          break; // Break retry loop to execute compensating fallback outside
         }
 
-        // Handle transient write conflicts under high concurrency
-        const isTransient =
-          txError.code === 112 ||
-          (txError.errorLabels && txError.errorLabels.includes("TransientTransactionError")) ||
-          (txError.message && txError.message.includes("Please retry your operation"));
+        // Handle ambiguous commit result: commit was attempted and result is unknown.
+        // DO NOT execute compensating fallback, as the vote may have been committed.
+        if (commitAttempted && isUnknownCommitResult(txError)) {
+          console.error("[Votes] Transaction commit resulted in UnknownTransactionCommitResult:", txError.message);
+          // Check if participation actually exists in the database
+          const confirmedParticipation = await Participation.findOne({
+            voterId: voter._id,
+            electionId: election._id,
+          });
+          if (confirmedParticipation) {
+            return res.status(201).json({
+              success: true,
+              message: "Your vote has been cast successfully.",
+              electionId: election._id,
+            });
+          }
+          return res.status(500).json({
+            success: false,
+            message: "An ambiguous transaction commit result occurred. Please verify your voting status before attempting again.",
+          });
+        }
+
+        // Check for transient write conflict under concurrency
+        const isTransient = isTransientTransactionError(txError);
 
         if (isTransient && attempt < MAX_RETRIES) {
           // Brief exponential backoff allowing competing transaction to complete
@@ -229,7 +432,7 @@ router.post("/", verifyToken, async (req, res) => {
           continue;
         }
 
-        // Post-conflict check if the winning concurrent transaction recorded this voter's participation
+        // Post-conflict check: if a concurrent winning transaction completed for this voter
         const alreadyVoted = await Participation.findOne({
           voterId: voter._id,
           electionId: election._id,
@@ -241,16 +444,30 @@ router.post("/", verifyToken, async (req, res) => {
           });
         }
 
-        console.error("[Votes] Transaction execution error:", txError.message);
+        console.error("[Votes] Transaction execution error:", {
+          attempt,
+          errorName: txError.name,
+          errorMessage: txError.message,
+          isTransient,
+        });
+
         return res.status(500).json({
           success: false,
           message: "An internal server error occurred while recording your vote.",
         });
       } finally {
         if (session) {
-          await session.endSession();
+          try {
+            await session.endSession();
+          } catch {}
         }
       }
+    }
+
+    // Execute compensating fallback ONLY if transactions are genuinely unsupported
+    // and commit was never attempted
+    if (fallbackToCompensating) {
+      return await executeCompensatingVote(res, voter._id, election._id, candidate._id);
     }
   } catch (error) {
     console.error("[Votes] POST / error:", error.message);
@@ -310,5 +527,11 @@ router.get("/my-participations", verifyToken, async (req, res) => {
     });
   }
 });
+
+// Internal helper references for automated reliability testing
+router._executeCompensatingVote = executeCompensatingVote;
+router._isTransactionUnsupportedError = isTransactionUnsupportedError;
+router._isTransientTransactionError = isTransientTransactionError;
+router._isUnknownCommitResult = isUnknownCommitResult;
 
 module.exports = router;

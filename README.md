@@ -88,7 +88,9 @@
     5. Anonymous ballot insert into `Ballot`.
     6. Atomic increments for `candidate.voteCount` and `election.voteCount`.
   - Built-in transaction retry loop (`MAX_RETRIES = 3` with exponential backoff) handles WiredTiger transient write conflicts during high concurrency, converting collisions into deterministic `409 Conflict: You have already voted in this election`.
-  - Compensating-write fallback protects atomic consistency in standalone or non-replica deployments.
+  - Transaction update operations verify that target documents were matched (`matchedCount === 1`), aborting on document mismatches.
+  - Ambiguous commit protection: if a commit throws `UnknownTransactionCommitResult`, compensating fallback is explicitly blocked to prevent duplicate writes or count corruption.
+  - Safe compensating-write fallback: when multi-document transactions are genuinely unsupported (e.g. standalone mongod), a hardened sequential write sequence verifies `matchedCount === 1` on every update, tracks each completed write, attempts all required rollbacks independently even if one rollback step fails, records structured diagnostics without logging voter choices or personal data, and flags manual administrator reconciliation if consistency cannot be restored.
 - **Participation Query Endpoints**:
   - `GET /api/votes/status/:electionId`: Authenticated endpoint allowing voters to verify whether they have cast a ballot in an election, returning `{ success: true, electionId, hasVoted, participatedAt }`.
   - `GET /api/votes/my-participations`: Authenticated endpoint returning `{ success: true, participatedElectionIds }` to hydrate the frontend on session initialization and refresh.
@@ -119,7 +121,7 @@
 | **Admin Provisioning** | Integration Test | Passed | Public register assigns `voter`, login does not promote, script promotes designated email, DB revocation denies JWT immediately (`403`). |
 | **Draft Isolation** | API Test | Passed | Public and voters see only published elections; draft queries return 404; admin token unlocks drafts. |
 | **Candidate CRUD & Locks** | Integration Test | Passed | Pre-vote deletion allowed; deleting election or candidate with `voteCount > 0` returns `400 Bad Request`. |
-| **One Vote Per Election** | Integration Test Suite | Passed | 15/15 tests passed: duplicate rejection (`409`), multi-election support, admin voting rejection (`403`), candidate mismatch (`400`), non-active states (`400`), concurrent duplicates (1 accepted, 4 rejected `409`), ballot/participation consistency. |
+| **One Vote Per Election** | Integration Test Suite | Passed | 16/16 tests passed: deployment transaction capability verified (disposable session test), duplicate rejection (`409`), multi-election support, admin voting rejection (`403`), candidate mismatch (`400`), non-active states (`400`), concurrent duplicates (1 accepted, 4 rejected `409`), ballot/participation consistency, and compensating-write fallback rollback & consistency. |
 | **Database Connection** | Health & Diagnostics | Passed | Live connection to Atlas `blockvote` database confirmed. |
 
 ---

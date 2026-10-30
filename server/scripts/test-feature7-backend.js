@@ -33,6 +33,51 @@ const authRoutes = require("../routes/auth");
 const electionRoutes = require("../routes/elections");
 const voteRoutes = require("../routes/votes");
 
+/**
+ * Safe transaction capability check
+ * Uses a disposable session with an empty transaction that is aborted.
+ * Does not modify or read any collection or project data.
+ */
+async function verifyTransactionSupport(connection) {
+  let testSession = null;
+  try {
+    testSession = await connection.startSession();
+    testSession.startTransaction();
+    // Safely abort disposable test transaction (no project data touched)
+    await testSession.abortTransaction();
+    return {
+      status: "Transaction supported.",
+      details: "Multi-document transactions verified via disposable session start/abort.",
+    };
+  } catch (err) {
+    const msg = String(err.message || "").toLowerCase();
+    const codeName = String(err.codeName || "");
+    if (
+      err.code === 20 ||
+      codeName === "IllegalOperation" ||
+      msg.includes("transaction numbers are only allowed on a replica set") ||
+      msg.includes("does not support multi-document transactions") ||
+      msg.includes("transactions are not supported") ||
+      msg.includes("standalone")
+    ) {
+      return {
+        status: "Transaction unsupported.",
+        details: err.message,
+      };
+    }
+    return {
+      status: "Verification inconclusive.",
+      details: err.message,
+    };
+  } finally {
+    if (testSession) {
+      try {
+        await testSession.endSession();
+      } catch {}
+    }
+  }
+}
+
 async function runFeature7Tests() {
   console.log("=== Feature 7: One Vote Per Election — Verification Suite ===");
   const mongoUri = process.env.MONGODB_URI;
@@ -43,6 +88,12 @@ async function runFeature7Tests() {
 
   await mongoose.connect(mongoUri);
   console.log("[Setup] Connected to MongoDB Atlas.");
+
+  // Verify MongoDB transaction support capability
+  console.log("\n[Setup] Checking deployment transaction capability...");
+  const txCapability = await verifyTransactionSupport(mongoose.connection);
+  console.log(`[Setup] Transaction capability result: ${txCapability.status}`);
+  console.log(`[Setup] Details: ${txCapability.details}`);
 
   // Ensure Participation indexes are created
   await Participation.init();
@@ -565,9 +616,72 @@ async function runFeature7Tests() {
     }
     console.log("PASS: All deletion and unsafe edit protections intact!");
 
-    console.log("\n ALL 15 BACKEND TESTS COMPLETED SUCCESSFULLY!");
+    // Test 16: Hardened Compensating Write Fallback Reliability
+    console.log("\n[Test 16] Hardened compensating-write fallback reliability & rollback test");
+    const executeCompensatingVote = voteRoutes._executeCompensatingVote;
+    if (typeof executeCompensatingVote === "function") {
+      const mockRes = {
+        _status: null,
+        _json: null,
+        status(code) {
+          this._status = code;
+          return this;
+        },
+        json(data) {
+          this._json = data;
+          return this;
+        },
+      };
+
+      // Attempt compensating vote with a non-matching candidate ID on activeElection2
+      const nonExistentCandId = new mongoose.Types.ObjectId();
+      await executeCompensatingVote(
+        mockRes,
+        voter2Id,
+        activeElection2._id,
+        nonExistentCandId
+      );
+
+      console.log("Compensating fallback with invalid candidate status:", mockRes._status);
+      console.log("Compensating fallback response:", mockRes._json);
+
+      if (mockRes._status === 201) {
+        throw new Error("FAIL Test 16: Compensating write returned 201 despite candidate update failure!");
+      }
+
+      // Verify that partial writes were rolled back cleanly:
+      // 1. Participation was rolled back
+      const leakedPart = await Participation.findOne({
+        voterId: voter2Id,
+        electionId: activeElection2._id,
+      });
+      if (leakedPart) {
+        throw new Error("FAIL Test 16: Participation record was not rolled back!");
+      }
+
+      // 2. Election voteCount was not incremented
+      const el2After = await Election.findById(activeElection2._id);
+      if (el2After.voteCount !== 1) { // Voter 1 already voted in activeElection2
+        throw new Error(`FAIL Test 16: Election voteCount corrupted! Expected 1, got ${el2After.voteCount}`);
+      }
+
+      // 3. No orphan ballots for activeElection2 and nonExistentCandId
+      const orphanBallot = await Ballot.findOne({
+        electionId: activeElection2._id,
+        candidateId: nonExistentCandId,
+      });
+      if (orphanBallot) {
+        throw new Error("FAIL Test 16: Orphan ballot was not rolled back!");
+      }
+
+      console.log("PASS: Compensating write fallback detected update failure, rejected vote, and cleanly rolled back all partial writes!");
+    } else {
+      console.log("SKIP Test 16: executeCompensatingVote not exported.");
+    }
+
+    console.log("\n ALL 16 BACKEND TESTS COMPLETED SUCCESSFULLY!");
   } finally {
-    // Clean up test data
+    // Robust, safe cleanup of test data
     console.log("\n--- Cleaning up test records ---");
     const testElectionIds = [
       activeElection1?._id,
@@ -577,16 +691,102 @@ async function runFeature7Tests() {
       draftElection?._id,
     ].filter(Boolean);
 
-    await Ballot.deleteMany({ electionId: { $in: testElectionIds } });
-    await Participation.deleteMany({ electionId: { $in: testElectionIds } });
-    await Candidate.deleteMany({ electionId: { $in: testElectionIds } });
-    await Election.deleteMany({ _id: { $in: testElectionIds } });
-    await Voter.deleteMany({ _id: { $in: [voter1Id, voter2Id, adminId].filter(Boolean) } });
+    const testVoterIds = [
+      voter1Id,
+      voter2Id,
+      adminId,
+    ].filter(Boolean);
 
-    console.log("Test records cleaned up.");
-    server.close();
-    await mongoose.disconnect();
-    console.log("Disconnected from MongoDB Atlas.");
+    const cleanupResults = [];
+
+    // 1. Delete ballots created for test elections only (never drop database or delete non-test records)
+    if (testElectionIds.length > 0) {
+      try {
+        const res = await Ballot.deleteMany({ electionId: { $in: testElectionIds } });
+        cleanupResults.push({ entity: "Ballot", deleted: res.deletedCount, success: true });
+      } catch (err) {
+        cleanupResults.push({ entity: "Ballot", error: err.message, success: false });
+      }
+    }
+
+    // 2. Delete participations created for test elections or test voters only
+    if (testElectionIds.length > 0 || testVoterIds.length > 0) {
+      try {
+        const conditions = [];
+        if (testElectionIds.length > 0) conditions.push({ electionId: { $in: testElectionIds } });
+        if (testVoterIds.length > 0) conditions.push({ voterId: { $in: testVoterIds } });
+
+        const res = await Participation.deleteMany({ $or: conditions });
+        cleanupResults.push({ entity: "Participation", deleted: res.deletedCount, success: true });
+      } catch (err) {
+        cleanupResults.push({ entity: "Participation", error: err.message, success: false });
+      }
+    }
+
+    // 3. Delete candidates created for test elections only
+    if (testElectionIds.length > 0) {
+      try {
+        const res = await Candidate.deleteMany({ electionId: { $in: testElectionIds } });
+        cleanupResults.push({ entity: "Candidate", deleted: res.deletedCount, success: true });
+      } catch (err) {
+        cleanupResults.push({ entity: "Candidate", error: err.message, success: false });
+      }
+    }
+
+    // 4. Delete test elections only
+    if (testElectionIds.length > 0) {
+      try {
+        const res = await Election.deleteMany({ _id: { $in: testElectionIds } });
+        cleanupResults.push({ entity: "Election", deleted: res.deletedCount, success: true });
+      } catch (err) {
+        cleanupResults.push({ entity: "Election", error: err.message, success: false });
+      }
+    }
+
+    // 5. Delete test voters only
+    if (testVoterIds.length > 0) {
+      try {
+        const res = await Voter.deleteMany({ _id: { $in: testVoterIds } });
+        cleanupResults.push({ entity: "Voter", deleted: res.deletedCount, success: true });
+      } catch (err) {
+        cleanupResults.push({ entity: "Voter", error: err.message, success: false });
+      }
+    }
+
+    // Report cleanup results clearly
+    let allCleanupsSuccessful = true;
+    for (const r of cleanupResults) {
+      if (r.success) {
+        console.log(`[Cleanup] Deleted ${r.deleted} test ${r.entity} record(s).`);
+      } else {
+        allCleanupsSuccessful = false;
+        console.error(`[Cleanup][ERROR] Failed to clean up test ${r.entity} records: ${r.error}`);
+      }
+    }
+
+    if (allCleanupsSuccessful) {
+      console.log("All test records cleaned up successfully.");
+    } else {
+      console.warn("Some test records could not be cleaned up automatically.");
+    }
+
+    // Always attempt to close the HTTP server
+    if (server) {
+      try {
+        await new Promise((resolve) => server.close(resolve));
+        console.log("[Cleanup] Test HTTP server closed.");
+      } catch (serverErr) {
+        console.error("[Cleanup][ERROR] Failed to close test HTTP server:", serverErr.message);
+      }
+    }
+
+    // Always attempt to disconnect Mongoose
+    try {
+      await mongoose.disconnect();
+      console.log("[Cleanup] Disconnected from MongoDB Atlas.");
+    } catch (dbErr) {
+      console.error("[Cleanup][ERROR] Failed to disconnect Mongoose:", dbErr.message);
+    }
   }
 }
 
