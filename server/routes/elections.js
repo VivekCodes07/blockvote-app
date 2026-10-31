@@ -129,7 +129,7 @@ router.get("/:id", async (req, res) => {
         party: c.party,
         biography: c.biography,
         imageUrl: c.imageUrl,
-        voteCount: c.voteCount,
+        voteCount: status === "Completed" ? c.voteCount : 0,
         electionId: c.electionId,
         createdAt: c.createdAt,
       })),
@@ -139,6 +139,135 @@ router.get("/:id", async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "An internal server error occurred while retrieving the election.",
+    });
+  }
+});
+
+// GET /api/elections/:id/results (Authenticated: retrieve final results & analytics once completed)
+router.get("/:id/results", verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid election ID format.",
+      });
+    }
+
+    const election = await Election.findById(id);
+    if (!election) {
+      return res.status(404).json({
+        success: false,
+        message: "Election not found.",
+      });
+    }
+
+    const status = Election.deriveStatus(election);
+
+    // Security rule: Candidate-wise results must NOT be disclosed while Draft, Scheduled, or Active.
+    // Final candidate-wise results should be accessible only when the election status is Completed.
+    // Admins must not bypass the result-visibility restriction.
+    if (status !== "Completed") {
+      return res.status(403).json({
+        success: false,
+        message: `Election results are not available until the election has completed. Current status: ${status}.`,
+        electionStatus: status,
+      });
+    }
+
+    // 1. Fetch all candidates for the election
+    const candidates = await Candidate.find({ electionId: id }).sort({ createdAt: 1 });
+
+    // 2. Count total ballots from the Ballot collection (authoritative source of anonymous votes)
+    const ballotTotal = await Ballot.countDocuments({ electionId: id });
+    const totalVotes = Math.max(election.voteCount || 0, ballotTotal);
+
+    // 3. Tally votes and calculate percentages for each candidate
+    // Use Ballot aggregation for data integrity verification while preserving candidate documents
+    const candidateTallies = await Ballot.aggregate([
+      { $match: { electionId: new mongoose.Types.ObjectId(id) } },
+      { $group: { _id: "$candidateId", count: { $sum: 1 } } },
+    ]);
+    const tallyMap = new Map();
+    candidateTallies.forEach((t) => {
+      tallyMap.set(t._id.toString(), t.count);
+    });
+
+    const candidatesWithResults = candidates.map((c) => {
+      const aggCount = tallyMap.get(c._id.toString()) || 0;
+      const candidateVotes = Math.max(c.voteCount || 0, aggCount);
+      const votePercentage =
+        totalVotes > 0 ? Number(((candidateVotes / totalVotes) * 100).toFixed(2)) : 0;
+
+      return {
+        id: c._id,
+        name: c.name,
+        party: c.party,
+        biography: c.biography,
+        imageUrl: c.imageUrl,
+        voteCount: candidateVotes,
+        votePercentage,
+      };
+    });
+
+    // 4. Sort candidates descending by voteCount
+    candidatesWithResults.sort((a, b) => b.voteCount - a.voteCount);
+
+    // 5. Determine winning candidate or tie
+    let winner = null;
+    let winners = [];
+    let isTie = false;
+
+    if (totalVotes > 0 && candidatesWithResults.length > 0) {
+      const maxVotes = candidatesWithResults[0].voteCount;
+      if (maxVotes > 0) {
+        const topCandidates = candidatesWithResults.filter((c) => c.voteCount === maxVotes);
+        if (topCandidates.length > 1) {
+          isTie = true;
+          winners = topCandidates;
+          winner = null;
+        } else {
+          isTie = false;
+          winners = topCandidates;
+          winner = topCandidates[0];
+        }
+      }
+    }
+
+    // 6. Registered voter turnout analytics
+    const totalRegisteredVoters = await Voter.countDocuments({ role: "voter" });
+    const turnoutPercentage =
+      totalRegisteredVoters > 0
+        ? Number(((totalVotes / totalRegisteredVoters) * 100).toFixed(2))
+        : 0;
+
+    return res.status(200).json({
+      success: true,
+      election: {
+        id: election._id,
+        title: election.title,
+        description: election.description,
+        startDate: election.startDate,
+        endDate: election.endDate,
+        status,
+        totalVotes,
+        candidateCount: candidates.length,
+        totalRegisteredVoters,
+        turnoutPercentage,
+      },
+      results: {
+        totalVotes,
+        isTie,
+        winner,
+        winners,
+        candidates: candidatesWithResults,
+      },
+    });
+  } catch (error) {
+    console.error("[Elections] GET /:id/results error:", error.message);
+    return res.status(500).json({
+      success: false,
+      message: "An internal server error occurred while retrieving election results.",
     });
   }
 });

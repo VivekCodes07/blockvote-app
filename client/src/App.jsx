@@ -30,8 +30,11 @@ import {
   ChevronRight,
   Send,
   Edit3,
+  BarChart2,
+  Trophy,
 } from "lucide-react";
 import "./App.css";
+import ElectionResultsView from "./ElectionResultsView";
 
 const activities = [
   {
@@ -1229,6 +1232,9 @@ function ElectionsView({
   // Action toast message
   const [actionNotice, setActionNotice] = useState(null);
 
+  // Results & Analytics view state (Feature 8)
+  const [viewingResultsElectionId, setViewingResultsElectionId] = useState(null);
+
   // Edit Election form state
   const [editForm, setEditForm] = useState({
     title: "",
@@ -1777,8 +1783,15 @@ function ElectionsView({
         </div>
       )}
 
-      {/* Selected Election Detail & Candidate View */}
-      {selectedElectionId ? (
+      {/* Feature 8: Election Results & Post-Election Analytics View */}
+      {viewingResultsElectionId ? (
+        <ElectionResultsView
+          electionId={viewingResultsElectionId}
+          currentUser={currentUser}
+          onBack={() => setViewingResultsElectionId(null)}
+          onGoToLogin={onGoToLogin}
+        />
+      ) : selectedElectionId ? (
         <div className="election-detail-container">
           <button
             type="button"
@@ -1885,8 +1898,44 @@ function ElectionsView({
                   </div>
                 )}
 
+                {/* Completed Election Results Banner (Feature 8) */}
+                {selectedElectionData.election.status === "Completed" && (
+                  <div className="completed-results-banner">
+                    <div className="completed-results-content">
+                      <div className="completed-results-icon">
+                        <Trophy size={20} />
+                      </div>
+                      <div>
+                        <strong>Election Concluded · Final Results Certified</strong>
+                        <p>
+                          Voting for this election has closed. View official vote counts, candidate shares, and post-election analytics.
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="view-results-hero-btn"
+                      onClick={() => setViewingResultsElectionId(selectedElectionData.election.id)}
+                    >
+                      <BarChart2 size={15} />
+                      View Results &amp; Analytics
+                    </button>
+                  </div>
+                )}
+
                 {isAdmin && (
                   <div className="hero-admin-actions">
+                    {selectedElectionData.election.status === "Completed" && (
+                      <button
+                        type="button"
+                        className="secondary-action-button"
+                        onClick={() => setViewingResultsElectionId(selectedElectionData.election.id)}
+                      >
+                        <BarChart2 size={15} />
+                        Results &amp; Analytics
+                      </button>
+                    )}
+
                     {selectedElectionData.election.isDraft && (
                       <button
                         type="button"
@@ -2081,7 +2130,15 @@ function ElectionsView({
 
                         <div className="candidate-footer">
                           <span className="candidate-votes">
-                            <strong>{candidate.voteCount}</strong> votes
+                            {selectedElectionData.election.status === "Completed" ? (
+                              <>
+                                <strong>{candidate.voteCount ?? 0}</strong> votes
+                              </>
+                            ) : (
+                              <span style={{ color: "#64748b", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                                <Lock size={12} /> Results Sealed
+                              </span>
+                            )}
                           </span>
 
                           {isAdmin ? (
@@ -2314,6 +2371,21 @@ function ElectionsView({
                     </div>
 
                     <div style={{ display: "flex", gap: "6px" }}>
+                      {election.status === "Completed" && (
+                        <button
+                          type="button"
+                          className="results-card-btn"
+                          title="View election results and post-election analytics"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setViewingResultsElectionId(election.id);
+                          }}
+                        >
+                          <BarChart2 size={13} />
+                          Results
+                        </button>
+                      )}
+
                       {isAdmin && election.isDraft && (
                         <button
                           type="button"
