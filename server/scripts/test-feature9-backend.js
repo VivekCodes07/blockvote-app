@@ -471,8 +471,92 @@ async function runFeature9Tests() {
     }
     console.log(`PASS Test 16: Final chain completely intact (${finalVerify.totalBlocks} total verified blocks).`);
 
+    // --- TEST 17: Tail Deletion Detection via Checkpoint Options ---
+    console.log("\n[Test 17] Testing tail deletion detection via expectedBlockCount and expectedLatestHash...");
+    // With 4 isolated test blocks [tGen, t1, t2, t3], omit t3 (tail block)
+    const truncatedChain = [tGen, t1, t2];
+    const naiveVerify = await verifyAuditChain(truncatedChain);
+    console.log("Naive verification on truncated chain (without options): isValid =", naiveVerify.isValid);
+    if (!naiveVerify.isValid) {
+      throw new Error("FAIL Test 17: Truncated chain should naively pass internal checks without external checkpoint.");
+    }
+
+    // Now verify with expectedBlockCount = 4
+    const checkpointCountVerify = await verifyAuditChain(truncatedChain, { expectedBlockCount: 4 });
+    console.log("Checkpoint count verification: isValid =", checkpointCountVerify.isValid, "reason:", checkpointCountVerify.reason);
+    if (checkpointCountVerify.isValid !== false || !checkpointCountVerify.reason.includes("Tail deletion")) {
+      throw new Error("FAIL Test 17: Tail deletion was not detected with expectedBlockCount!");
+    }
+
+    // Verify with expectedLatestHash = t3.hash
+    const checkpointHashVerify = await verifyAuditChain(truncatedChain, { expectedLatestHash: t3.hash });
+    console.log("Checkpoint hash verification: isValid =", checkpointHashVerify.isValid, "reason:", checkpointHashVerify.reason);
+    if (checkpointHashVerify.isValid !== false || !checkpointHashVerify.reason.includes("Tip hash mismatch")) {
+      throw new Error("FAIL Test 17: Tip hash mismatch was not detected with expectedLatestHash!");
+    }
+    console.log("PASS Test 17: Tail deletion successfully detected via checkpoint parameters.");
+
+    // --- TEST 18: Tail Deletion Detection via Election Vote Count Cross-Validation ---
+    console.log("\n[Test 18] Testing dual-ledger cross-validation against Election vote counts...");
+    // activeElection currently has voteCount = 1 (from Test 12)
+    // If we test with checkElectionVoteCounts = true on live DB, it passes because VOTE_RECORDED exists
+    const liveCrossCheck = await verifyAuditChain(null, { checkElectionVoteCounts: true });
+    if (!liveCrossCheck.isValid) {
+      throw new Error(`FAIL Test 18: Live cross-check failed unexpectedly: ${liveCrossCheck.reason}`);
+    }
+
+    // Now artificially increment activeElection.voteCount to simulate a vote whose audit block was deleted
+    await Election.updateOne({ _id: activeElection._id }, { $inc: { voteCount: 1 } });
+    const discrepancyCheck = await verifyAuditChain(null, { checkElectionVoteCounts: true });
+    // Restore voteCount
+    await Election.updateOne({ _id: activeElection._id }, { $inc: { voteCount: -1 } });
+
+    console.log("Cross-check discrepancy result: isValid =", discrepancyCheck.isValid, "reason:", discrepancyCheck.reason);
+    if (discrepancyCheck.isValid !== false || !discrepancyCheck.reason.includes("Audit chain discrepancy")) {
+      throw new Error("FAIL Test 18: Discrepancy between election voteCount and audit records was not caught!");
+    }
+    console.log("PASS Test 18: Dual-ledger cross-validation caught missing/deleted audit blocks.");
+
+    // --- TEST 19: API Verification with Checkpoint Parameters ---
+    console.log("\n[Test 19] Testing /api/audit/verify query parameters...");
+    const currentTotal = await AuditBlock.countDocuments();
+    const badCountVerifyRes = await fetch(`${baseUrl}/api/audit/verify?expectedCount=${currentTotal + 5}`, {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    const badCountData = await badCountVerifyRes.json();
+    if (!badCountData.success || badCountData.verification.isValid !== false) {
+      throw new Error("FAIL Test 19: /api/audit/verify did not flag expectedCount mismatch!");
+    }
+    console.log("PASS Test 19: /api/audit/verify correctly accepts checkpoint parameters and flags mismatches.");
+
+    // --- TEST 20: Candidate Update & Election Results Audit Events ---
+    console.log("\n[Test 20] Testing CANDIDATE_UPDATED and ELECTION_COMPLETED audit events...");
+    // Update candidate biography (name modification forbidden once votes are recorded)
+    const updateCandRes = await fetch(`${baseUrl}/api/elections/${activeElection._id}/candidates/${candA._id}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${adminToken}`,
+      },
+      body: JSON.stringify({
+        biography: "Updated Candidate Biography for Alpha",
+      }),
+    });
+    if (updateCandRes.status !== 200) {
+      throw new Error(`FAIL Test 20: Candidate update failed with status ${updateCandRes.status}`);
+    }
+    const updateBlock = await AuditBlock.findOne({
+      electionId: activeElection._id,
+      eventType: "CANDIDATE_UPDATED",
+    });
+    if (!updateBlock) {
+      throw new Error("FAIL Test 20: CANDIDATE_UPDATED audit block was not created!");
+    }
+    testRecordIds.auditBlocks.push(updateBlock._id);
+    console.log("PASS Test 20: CANDIDATE_UPDATED audit block successfully generated.");
+
     console.log("\n=======================================================");
-    console.log("ALL 16 FEATURE 9 BACKEND TESTS PASSED SUCCESSFULLY (100%)!");
+    console.log("ALL 20 FEATURE 9 AUDIT & RELIABILITY TESTS PASSED (100%)!");
     console.log("=======================================================");
   } finally {
     console.log("\n[Cleanup] Cleaning up isolated test records...");

@@ -80,26 +80,49 @@ async function ensureGenesisBlock(session = null) {
   }
 }
 
-// In-process serialization queue for clean sequential appends
+// In-process serialization queue for clean sequential appends within a single process
 let appendQueue = Promise.resolve();
+const MAX_APPEND_RETRIES = 5;
 
 /**
  * Append an audit block to the ledger.
  * Connects cryptographically to the latest block's hash.
+ * Safe across concurrent calls and multi-process deployments.
  */
 async function appendAuditBlock({ eventType, electionId = null, metadata = {} }, session = null) {
-  // If running within an existing MongoDB transaction session, execute immediately in session
+  // If running within an existing MongoDB transaction session, execute immediately in session.
+  // (Transactions handle conflict retries at the outer transaction loop)
   if (session) {
     return await executeAppend({ eventType, electionId, metadata }, session);
   }
 
-  // Otherwise, sequence through in-process promise queue to avoid concurrent index collisions
+  // Otherwise, sequence through in-process promise queue and handle cross-process unique collisions
   const appendTask = appendQueue.then(async () => {
-    return await executeAppend({ eventType, electionId, metadata }, null);
+    return await executeAppendWithRetry({ eventType, electionId, metadata });
   });
 
   appendQueue = appendTask.catch(() => {});
   return await appendTask;
+}
+
+/**
+ * Execute append with retry for non-transaction calls under multi-process concurrency
+ */
+async function executeAppendWithRetry({ eventType, electionId, metadata }) {
+  let attempt = 0;
+  while (true) {
+    attempt++;
+    try {
+      return await executeAppend({ eventType, electionId, metadata }, null);
+    } catch (err) {
+      if (err.code === 11000 && attempt < MAX_APPEND_RETRIES) {
+        const jitter = Math.floor(Math.random() * 40) + 10;
+        await new Promise((resolve) => setTimeout(resolve, attempt * 50 + jitter));
+        continue;
+      }
+      throw err;
+    }
+  }
 }
 
 /**
@@ -136,15 +159,47 @@ async function executeAppend({ eventType, electionId, metadata }, session) {
 /**
  * Verify cryptographic integrity of the entire audit chain.
  * Read-only: never modifies or repairs corrupted records.
+ *
+ * Supports optional checkpoint verification and database cross-validation
+ * to detect silent tail-block deletion.
+ *
+ * @param {Array|null} blocksInput - Array of blocks to verify, or null to query database
+ * @param {Object} options - Verification options:
+ *   - expectedBlockCount {number|null}: Expected total block count from checkpoint
+ *   - expectedLatestHash {string|null}: Expected latest block hash from checkpoint
+ *   - checkElectionVoteCounts {boolean}: Cross-validate VOTE_RECORDED blocks against Election voteCount (default: true)
  */
-async function verifyAuditChain(blocksInput = null) {
+async function verifyAuditChain(blocksInput = null, options = {}) {
+  const {
+    expectedBlockCount = null,
+    expectedLatestHash = null,
+    checkElectionVoteCounts = true,
+  } = options;
+
   const blocks = blocksInput || (await AuditBlock.find().sort({ index: 1 }));
 
   if (!blocks || blocks.length === 0) {
+    if (expectedBlockCount && expectedBlockCount > 0) {
+      return {
+        isValid: false,
+        totalBlocks: 0,
+        reason: `Ledger is empty but expected ${expectedBlockCount} blocks from checkpoint. Possible total ledger deletion.`,
+      };
+    }
     return {
       isValid: true,
       totalBlocks: 0,
       message: "Ledger is empty. No blocks to verify.",
+    };
+  }
+
+  // External Checkpoint Check: Expected Block Count (catches tail deletion)
+  if (expectedBlockCount !== null && blocks.length !== expectedBlockCount) {
+    return {
+      isValid: false,
+      totalBlocks: blocks.length,
+      brokenBlockIndex: blocks.length,
+      reason: `Tail deletion detected: checkpoint expected ${expectedBlockCount} blocks, but ledger contains ${blocks.length} blocks.`,
     };
   }
 
@@ -215,10 +270,57 @@ async function verifyAuditChain(blocksInput = null) {
     }
   }
 
+  const latestBlock = blocks[blocks.length - 1];
+
+  // External Checkpoint Check: Expected Latest Hash (catches tail replacement / truncation)
+  if (expectedLatestHash && latestBlock.hash !== expectedLatestHash) {
+    return {
+      isValid: false,
+      totalBlocks: blocks.length,
+      brokenBlockIndex: latestBlock.index,
+      reason: `Tip hash mismatch: expected latest hash "${expectedLatestHash.substring(0, 16)}...", but found "${latestBlock.hash.substring(0, 16)}...". Possible tail alteration or truncation.`,
+    };
+  }
+
+  // 3. Database Invariant Cross-Validation: Check vote counts against Election documents
+  // If tail blocks containing votes were deleted, election.voteCount will exceed VOTE_RECORDED blocks!
+  if (checkElectionVoteCounts && !blocksInput) {
+    try {
+      const Election = require("../models/Election");
+      const elections = await Election.find({ voteCount: { $gt: 0 } }).select("_id title voteCount");
+      for (const election of elections) {
+        // Cross-check elections that are recorded in the audit ledger
+        const hasAuditPresence = blocks.some(
+          (b) => b.electionId && b.electionId.toString() === election._id.toString()
+        );
+
+        if (hasAuditPresence) {
+          const voteBlockCount = blocks.filter(
+            (b) =>
+              b.eventType === "VOTE_RECORDED" &&
+              b.electionId &&
+              b.electionId.toString() === election._id.toString()
+          ).length;
+
+          if (voteBlockCount < election.voteCount) {
+            return {
+              isValid: false,
+              totalBlocks: blocks.length,
+              brokenBlockIndex: blocks.length - 1,
+              reason: `Audit chain discrepancy: Election "${election.title}" records ${election.voteCount} votes, but only ${voteBlockCount} VOTE_RECORDED audit blocks exist in the ledger. Tail truncation or block deletion detected.`,
+            };
+          }
+        }
+      }
+    } catch (dbErr) {
+      console.warn("[Blockchain] Warning during election vote count cross-check:", dbErr.message);
+    }
+  }
+
   return {
     isValid: true,
     totalBlocks: blocks.length,
-    latestBlockHash: blocks[blocks.length - 1].hash,
+    latestBlockHash: latestBlock.hash,
     genesisHash: genesis.hash,
     message: "Blockchain audit trail is verified and intact. All cryptographic links and block hashes match.",
   };

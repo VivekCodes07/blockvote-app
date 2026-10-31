@@ -6,6 +6,7 @@ const Candidate = require("../models/Candidate");
 const Voter = require("../models/Voter");
 const Ballot = require("../models/Ballot");
 const Participation = require("../models/Participation");
+const AuditBlock = require("../models/AuditBlock");
 const { appendAuditBlock } = require("../utils/blockchain");
 const { verifyToken, requireAdmin } = require("../middleware/auth");
 
@@ -241,6 +242,27 @@ router.get("/:id/results", verifyToken, async (req, res) => {
       totalRegisteredVoters > 0
         ? Number(((totalVotes / totalRegisteredVoters) * 100).toFixed(2))
         : 0;
+
+    // 7. Audit certification: Record ELECTION_COMPLETED block once if not already logged
+    try {
+      const existingCompletion = await AuditBlock.findOne({
+        electionId: election._id,
+        eventType: "ELECTION_COMPLETED",
+      });
+      if (!existingCompletion) {
+        await appendAuditBlock({
+          eventType: "ELECTION_COMPLETED",
+          electionId: election._id,
+          metadata: {
+            title: election.title,
+            totalVotes,
+            endDate: election.endDate.toISOString(),
+          },
+        });
+      }
+    } catch (auditErr) {
+      console.warn("[Elections] Failed to append audit block for ELECTION_COMPLETED:", auditErr.message);
+    }
 
     return res.status(200).json({
       success: true,
@@ -797,6 +819,19 @@ router.put("/:id/candidates/:candidateId", verifyToken, requireAdmin, async (req
     }
 
     await candidate.save();
+
+    try {
+      await appendAuditBlock({
+        eventType: "CANDIDATE_UPDATED",
+        electionId: id,
+        metadata: {
+          candidateName: candidate.name,
+          candidateParty: candidate.party,
+        },
+      });
+    } catch (auditErr) {
+      console.warn("[Elections] Failed to append audit block for CANDIDATE_UPDATED:", auditErr.message);
+    }
 
     return res.status(200).json({
       success: true,

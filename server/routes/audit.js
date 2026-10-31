@@ -50,7 +50,16 @@ router.get("/verify", verifyToken, requireAdmin, async (req, res) => {
   try {
     await ensureGenesisBlock();
 
-    const verificationResult = await verifyAuditChain();
+    const expectedBlockCount = req.query.expectedCount
+      ? parseInt(req.query.expectedCount, 10)
+      : null;
+    const expectedLatestHash = req.query.expectedHash || null;
+
+    const verificationResult = await verifyAuditChain(null, {
+      expectedBlockCount: isNaN(expectedBlockCount) ? null : expectedBlockCount,
+      expectedLatestHash,
+      checkElectionVoteCounts: true,
+    });
 
     return res.status(200).json({
       success: true,

@@ -129,7 +129,14 @@ async function executeCompensatingVote(res, voterId, electionId, candidateId) {
       electionId,
     });
   } catch (err) {
-    if (err.code === 11000) {
+    // If duplicate participation occurred at Step 1 before any partial writes were made
+    const isDuplicateParticipation =
+      err.code === 11000 &&
+      !completedWrites.participation &&
+      (String(err.message || "").includes("participations") ||
+        Boolean(err.keyPattern && err.keyPattern.voterId !== undefined));
+
+    if (isDuplicateParticipation) {
       return res.status(409).json({
         success: false,
         message: "You have already voted in this election.",
@@ -431,7 +438,13 @@ router.post("/", verifyToken, async (req, res) => {
         }
 
         // Handle duplicate participation caught by unique compound index (permanent, do not retry)
-        if (txError.code === 11000) {
+        // Strictly verify that the collision occurred on the Participation collection, not an AuditBlock index collision
+        const isDuplicateParticipation =
+          txError.code === 11000 &&
+          (String(txError.message || "").includes("participations") ||
+            Boolean(txError.keyPattern && txError.keyPattern.voterId !== undefined));
+
+        if (isDuplicateParticipation) {
           return res.status(409).json({
             success: false,
             message: "You have already voted in this election.",
@@ -469,8 +482,8 @@ router.post("/", verifyToken, async (req, res) => {
           });
         }
 
-        // Check for transient write conflict under concurrency
-        const isTransient = isTransientTransactionError(txError);
+        // Check for transient write conflict under concurrency (including ledger index collision)
+        const isTransient = isTransientTransactionError(txError) || txError.code === 11000;
 
         if (isTransient && attempt < MAX_RETRIES) {
           // Brief exponential backoff allowing competing transaction to complete
