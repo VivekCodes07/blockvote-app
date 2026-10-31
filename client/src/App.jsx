@@ -35,6 +35,7 @@ import {
 } from "lucide-react";
 import "./App.css";
 import ElectionResultsView from "./ElectionResultsView";
+import AuditDashboard from "./AuditDashboard";
 
 const activities = [
   {
@@ -492,6 +493,12 @@ function App() {
               setSelectedElectionId={setSelectedElectionId}
               participatedElectionIds={participatedElectionIds}
               onVoteSuccess={handleVoteSuccess}
+            />
+          ) : activeNav === "Blockchain Explorer" ? (
+            <AuditDashboard
+              currentUser={currentUser}
+              onGoToLogin={() => setActiveNav("Voters")}
+              onBack={() => setActiveNav("Dashboard")}
             />
           ) : (
             <>

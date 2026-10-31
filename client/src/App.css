@@ -3161,6 +3161,317 @@ input:focus-visible {
   line-height: 1.5;
 }
 
+/* ==========================================================================
+   Feature 9: Blockchain Audit Trail & Tamper Verification Styles
+   ========================================================================== */
+
+.font-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.verify-btn {
+  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+  border: 1px solid rgba(99, 102, 241, 0.4);
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.3);
+}
+
+.verify-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #818cf8 0%, #6366f1 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(99, 102, 241, 0.45);
+}
+
+.chain-verification-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  border-radius: 14px;
+  padding: 18px 22px;
+  margin-bottom: 22px;
+  animation: fadeInResults 0.2s ease-out;
+}
+
+.chain-verification-banner.valid {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.15) 0%, rgba(5, 150, 105, 0.1) 100%);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  color: #34d399;
+}
+
+.chain-verification-banner.invalid {
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.16) 0%, rgba(185, 28, 28, 0.12) 100%);
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  color: #f87171;
+}
+
+.verification-icon-col {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.verification-content-col {
+  flex: 1;
+}
+
+.verification-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.verification-title-row h4 {
+  margin: 0;
+  font: 700 16px "Space Grotesk", sans-serif;
+  color: inherit;
+}
+
+.verification-timestamp {
+  font-size: 11.5px;
+  opacity: 0.8;
+}
+
+.verification-detail {
+  margin: 0;
+  font-size: 13px;
+  color: #e2e8f0;
+  line-height: 1.5;
+}
+
+.hash-truncate {
+  font-size: 13px;
+  color: #e2e8f0;
+}
+
+.icon-copy-btn {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 3px;
+  border-radius: 4px;
+  display: inline-grid;
+  place-items: center;
+  transition: all 0.15s ease;
+}
+
+.icon-copy-btn:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.audit-blocks-panel {
+  padding: 24px;
+  background: #141726;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  margin-bottom: 22px;
+}
+
+.audit-filters-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.audit-filter-pill {
+  padding: 5px 12px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #94a3b8;
+  font: 600 11.5px "Space Grotesk", sans-serif;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.audit-filter-pill:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #cbd5e1;
+}
+
+.audit-filter-pill.active {
+  background: #6366f1;
+  border-color: #6366f1;
+  color: #ffffff;
+}
+
+.blocks-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.block-card {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 14px;
+  padding: 18px 20px;
+  transition: all 0.15s ease;
+}
+
+.block-card:hover {
+  border-color: rgba(99, 102, 241, 0.35);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.block-index-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.block-number-badge {
+  font: 700 13px "Space Grotesk", sans-serif;
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+  padding: 3px 10px;
+  border-radius: 6px;
+}
+
+.event-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 600 11.5px "Space Grotesk", sans-serif;
+  padding: 3px 10px;
+  border-radius: 6px;
+  letter-spacing: 0.3px;
+}
+
+.event-badge.genesis {
+  background: rgba(168, 85, 247, 0.15);
+  color: #c084fc;
+  border: 1px solid rgba(168, 85, 247, 0.3);
+}
+
+.event-badge.vote {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.event-badge.election {
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.event-badge.candidate {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.event-badge.default {
+  background: rgba(148, 163, 184, 0.15);
+  color: #cbd5e1;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+}
+
+.block-timestamp {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.block-hashes-box {
+  background: #0d101a;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+
+.hash-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.hash-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #64748b;
+  width: 95px;
+  flex-shrink: 0;
+  font-weight: 500;
+}
+
+.hash-val {
+  color: #94a3b8;
+  word-break: break-all;
+  flex: 1;
+}
+
+.hash-val.current {
+  color: #a5b4fc;
+  font-weight: 600;
+}
+
+.hash-link-arrow {
+  font-size: 10.5px;
+  color: #475569;
+  letter-spacing: 0.5px;
+  padding: 4px 0 4px 105px;
+  font-family: "Space Grotesk", sans-serif;
+  font-weight: 600;
+}
+
+.block-metadata-box {
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 8px;
+}
+
+.metadata-label {
+  display: block;
+  font-size: 11px;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  margin-bottom: 4px;
+}
+
+.metadata-pre {
+  margin: 0;
+  font-family: ui-monospace, monospace;
+  font-size: 11.5px;
+  color: #cbd5e1;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.block-election-ref {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: #64748b;
+}
+
+.block-election-ref .font-mono {
+  color: #94a3b8;
+}
+
+
 
 
 

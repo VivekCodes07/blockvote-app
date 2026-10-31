@@ -5,6 +5,8 @@ const Candidate = require("../models/Candidate");
 const Voter = require("../models/Voter");
 const Participation = require("../models/Participation");
 const Ballot = require("../models/Ballot");
+const AuditBlock = require("../models/AuditBlock");
+const { appendAuditBlock } = require("../utils/blockchain");
 const { verifyToken } = require("../middleware/auth");
 
 const router = express.Router();
@@ -78,6 +80,7 @@ async function executeCompensatingVote(res, voterId, electionId, candidateId) {
     ballotId: null,
     electionIncremented: false,
     candidateIncremented: false,
+    auditBlockId: null,
   };
 
   try {
@@ -109,6 +112,17 @@ async function executeCompensatingVote(res, voterId, electionId, candidateId) {
     }
     completedWrites.candidateIncremented = true;
 
+    // 5. Append audit block for successful vote (anonymous, non-identifying metadata)
+    const auditBlock = await appendAuditBlock({
+      eventType: "VOTE_RECORDED",
+      electionId,
+      metadata: {
+        event: "VOTE_RECORDED",
+        timestamp: new Date().toISOString(),
+      },
+    });
+    completedWrites.auditBlockId = auditBlock._id;
+
     return res.status(201).json({
       success: true,
       message: "Your vote has been cast successfully.",
@@ -131,12 +145,30 @@ async function executeCompensatingVote(res, voterId, electionId, candidateId) {
         ballot: Boolean(completedWrites.ballotId),
         electionCount: completedWrites.electionIncremented,
         candidateCount: completedWrites.candidateIncremented,
+        auditBlock: Boolean(completedWrites.auditBlockId),
       },
     });
 
     // Execute compensating rollbacks in reverse order
     // Ensure ALL rollbacks are attempted independently even if one fails
     const rollbackFailures = [];
+
+    if (completedWrites.auditBlockId) {
+      try {
+        const delAuditResult = await AuditBlock.deleteOne({ _id: completedWrites.auditBlockId });
+        if (!delAuditResult || delAuditResult.deletedCount !== 1) {
+          rollbackFailures.push({
+            step: "rollback_audit_block",
+            reason: "Audit block document could not be deleted",
+          });
+        }
+      } catch (rollbackErr) {
+        rollbackFailures.push({
+          step: "rollback_audit_block",
+          reason: rollbackErr.message,
+        });
+      }
+    }
 
     if (completedWrites.candidateIncremented) {
       try {
@@ -366,6 +398,20 @@ router.post("/", verifyToken, async (req, res) => {
         if (!candidateUpdate || candidateUpdate.matchedCount !== 1) {
           throw new Error("Candidate document could not be matched for vote count increment in transaction");
         }
+
+        // 5. Atomically append audit block in the same transaction (anonymous, non-identifying metadata)
+        await appendAuditBlock(
+          {
+            eventType: "VOTE_RECORDED",
+            electionId: election._id,
+            metadata: {
+              event: "VOTE_RECORDED",
+              electionTitle: election.title,
+              timestamp: new Date().toISOString(),
+            },
+          },
+          session
+        );
 
         commitAttempted = true;
         await session.commitTransaction();

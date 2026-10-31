@@ -6,6 +6,7 @@ const Candidate = require("../models/Candidate");
 const Voter = require("../models/Voter");
 const Ballot = require("../models/Ballot");
 const Participation = require("../models/Participation");
+const { appendAuditBlock } = require("../utils/blockchain");
 const { verifyToken, requireAdmin } = require("../middleware/auth");
 
 const router = express.Router();
@@ -330,6 +331,21 @@ router.post("/", verifyToken, requireAdmin, async (req, res) => {
       isDraft: typeof isDraft === "boolean" ? isDraft : false,
     });
 
+    try {
+      await appendAuditBlock({
+        eventType: "ELECTION_CREATED",
+        electionId: election._id,
+        metadata: {
+          title: election.title,
+          startDate: election.startDate.toISOString(),
+          endDate: election.endDate.toISOString(),
+          isDraft: election.isDraft,
+        },
+      });
+    } catch (auditErr) {
+      console.warn("[Elections] Audit block creation warning:", auditErr.message);
+    }
+
     const status = Election.deriveStatus(election);
 
     return res.status(201).json({
@@ -553,6 +569,21 @@ router.patch("/:id/publish", verifyToken, requireAdmin, async (req, res) => {
 
     const derivedStatus = Election.deriveStatus(election);
 
+    try {
+      await appendAuditBlock({
+        eventType: "ELECTION_PUBLISHED",
+        electionId: election._id,
+        metadata: {
+          title: election.title,
+          startDate: election.startDate.toISOString(),
+          endDate: election.endDate.toISOString(),
+          status: derivedStatus,
+        },
+      });
+    } catch (auditErr) {
+      console.warn("[Elections] Failed to append audit block for ELECTION_PUBLISHED:", auditErr.message);
+    }
+
     return res.status(200).json({
       success: true,
       message: `Election "${election.title}" published successfully! Status is now "${derivedStatus}".`,
@@ -667,6 +698,19 @@ router.post("/:id/candidates", verifyToken, requireAdmin, async (req, res) => {
       imageUrl: typeof imageUrl === "string" ? imageUrl.trim() : "",
       electionId: id,
     });
+
+    try {
+      await appendAuditBlock({
+        eventType: "CANDIDATE_ADDED",
+        electionId: id,
+        metadata: {
+          candidateName: candidate.name,
+          candidateParty: candidate.party,
+        },
+      });
+    } catch (auditErr) {
+      console.warn("[Elections] Failed to append audit block for CANDIDATE_ADDED:", auditErr.message);
+    }
 
     return res.status(201).json({
       success: true,
@@ -814,6 +858,18 @@ router.delete("/:id/candidates/:candidateId", verifyToken, requireAdmin, async (
     }
 
     await Candidate.findByIdAndDelete(candidateId);
+
+    try {
+      await appendAuditBlock({
+        eventType: "CANDIDATE_REMOVED",
+        electionId: id,
+        metadata: {
+          candidateName: candidate.name,
+        },
+      });
+    } catch (auditErr) {
+      console.warn("[Elections] Failed to append audit block for CANDIDATE_REMOVED:", auditErr.message);
+    }
 
     return res.status(200).json({
       success: true,
